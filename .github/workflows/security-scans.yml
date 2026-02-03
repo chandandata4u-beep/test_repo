@@ -1,4 +1,4 @@
-name: Security Scans (Gitleaks + Pylint)
+name: Security Scans (Gitleaks SARIF -> CSV + Pylint)
 
 on:
   push:
@@ -10,36 +10,37 @@ permissions:
 
 jobs:
   gitleaks_scan:
-    name: Gitleaks Scan
+    name: Gitleaks Scan (SARIF)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run gitleaks secret scan
+      - name: Run gitleaks secret scan (SARIF)
         uses: gitleaks/gitleaks-action@v2
         with:
-          args: detect --source . --no-git --report-format json --report-path gitleaks-report.json --exit-code 1 --verbose
+          args: detect --source . --no-git --report-format sarif --report-path gitleaks-report.sarif --exit-code 1 --verbose
 
-      # IMPORTANT: Always create a valid report so the artifact always exists
-      - name: Ensure gitleaks report exists
+      - name: Ensure SARIF report exists
         if: always()
         run: |
-          if [ ! -f gitleaks-report.json ]; then
-            echo "[]" > gitleaks-report.json
+          if [ ! -f gitleaks-report.sarif ]; then
+            cat > gitleaks-report.sarif <<'EOF'
+            {"version":"2.1.0","runs":[]}
+            EOF
           fi
 
-      - name: Upload gitleaks report
+      - name: Upload gitleaks SARIF report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gitleaks-report
-          path: gitleaks-report.json
+          path: gitleaks-report.sarif
           if-no-files-found: warn
 
   convert_secret_report:
-    name: Convert Gitleaks JSON to CSV
+    name: Convert Gitleaks SARIF to CSV
     runs-on: ubuntu-latest
     needs: [gitleaks_scan]
     if: always()
@@ -59,43 +60,43 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Convert to CSV
+      - name: Convert SARIF -> CSV
         run: |
           python - <<'PY'
           import json, csv, os
 
-          input_file = "gitleaks-report.json"
-          output_file = "secrets-findings.csv"
+          sarif_file = "gitleaks-report.sarif"
+          csv_file = "secrets-findings.csv"
 
-          # If artifact is missing for some reason, still create an empty CSV
-          if not os.path.exists(input_file):
-              with open(output_file, "w", newline="") as f:
-                  csv.writer(f).writerow(["file", "line", "rule", "secret_masked"])
-              print("No gitleaks report found; created empty CSV.")
-              raise SystemExit(0)
-
-          with open(input_file, "r", encoding="utf-8") as f:
-              try:
-                  data = json.load(f)
-              except Exception:
-                  data = []
-
-          findings = data if isinstance(data, list) else data.get("findings", [])
-
-          with open(output_file, "w", newline="", encoding="utf-8") as f:
+          with open(csv_file, "w", newline="", encoding="utf-8") as f:
               w = csv.writer(f)
-              w.writerow(["file", "line", "rule", "secret_masked"])
-              for item in findings:
-                  secret = item.get("Secret", "") or ""
-                  masked = (secret[:4] + "*" * max(0, len(secret) - 7) + secret[-3:]) if secret else ""
-                  w.writerow([
-                      item.get("File"),
-                      item.get("StartLine"),
-                      item.get("RuleID"),
-                      masked
-                  ])
+              w.writerow(["file", "line", "rule", "message"])
 
-          print(f"CSV generated: {output_file} ({len(findings)} secrets)")
+              if not os.path.exists(sarif_file) or os.path.getsize(sarif_file) == 0:
+                  print("No SARIF file found or empty; wrote header only.")
+                  raise SystemExit(0)
+
+              data = json.load(open(sarif_file, "r", encoding="utf-8"))
+              rows = 0
+
+              for run in data.get("runs", []):
+                  for r in run.get("results", []):
+                      rule = r.get("ruleId", "") or ""
+                      msg = (r.get("message", {}) or {}).get("text", "") or ""
+
+                      locs = r.get("locations", []) or []
+                      if not locs:
+                          continue
+
+                      phys = (locs[0].get("physicalLocation", {}) or {})
+                      file_ = (phys.get("artifactLocation", {}) or {}).get("uri", "") or ""
+                      region = (phys.get("region", {}) or {})
+                      line = region.get("startLine", "") or ""
+
+                      w.writerow([file_, line, rule, msg])
+                      rows += 1
+
+          print(f"CSV generated: {csv_file} ({rows} findings)")
           PY
 
       - name: Upload secrets CSV
@@ -107,7 +108,7 @@ jobs:
           if-no-files-found: warn
 
   pylint_scan:
-    name: Pylint Scan
+    name: Pylint Scan (JSON -> CSV)
     runs-on: ubuntu-latest
     needs: [convert_secret_report]
     if: always()
@@ -126,9 +127,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir pylint
 
-      - name: Run pylint JSON
+      - name: Run pylint (JSON)
         run: |
-          # If repo has no Python files, don't fail the job; create empty report
           PY_FILES=$(git ls-files '*.py' || true)
           if [ -z "$PY_FILES" ]; then
             echo "[]" > pylint-report.json
@@ -138,7 +138,6 @@ jobs:
 
           pylint $PY_FILES --output-format=json > pylint-report.json || true
 
-          # Ensure file exists even if pylint produced nothing
           if [ ! -s pylint-report.json ]; then
             echo "[]" > pylint-report.json
           fi
