@@ -6,4 +6,4 @@ aws_key = "AKIAKKRN8L2Q3V1ZB9WY"
 secret_key = "AKIAKKRN8L2Q3V1ZB9RY"
 aws_access_key_id = "AKIAZZZZZZZZZZZZZZZZ"
 github_token = "ghp_1234567890ABCDEFGHijklmnopqrstuv"
-print("github test")
+
