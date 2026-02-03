@@ -17,28 +17,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # NOTE: This action in your environment DOES NOT accept "args:"
-      # It produces gitleaks-results.sarif by default.
       - name: Run gitleaks
         uses: gitleaks/gitleaks-action@v2
 
-      # Ensure the SARIF exists so artifact upload never breaks
-      - name: Ensure SARIF exists
+      # DO NOT upload SARIF yourself — the action already produces the artifact
+      - name: Note
         if: always()
-        run: |
-          if [ ! -f gitleaks-results.sarif ]; then
-            cat > gitleaks-results.sarif <<'EOF'
-            {"version":"2.1.0","runs":[]}
-            EOF
-          fi
-
-      - name: Upload gitleaks SARIF report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gitleaks-report
-          path: gitleaks-results.sarif
-          if-no-files-found: warn
+        run: echo "Gitleaks action produces artifact named gitleaks-results.sarif"
 
   convert_secret_report:
     name: Convert Gitleaks SARIF to CSV
@@ -46,14 +31,10 @@ jobs:
     needs: [gitleaks_scan]
     if: always()
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download gitleaks report artifact
-        continue-on-error: true
+      - name: Download gitleaks SARIF artifact (produced by gitleaks action)
         uses: actions/download-artifact@v4
         with:
-          name: gitleaks-report
+          name: gitleaks-results.sarif
           path: .
 
       - name: Setup Python
@@ -73,8 +54,8 @@ jobs:
               w = csv.writer(f)
               w.writerow(["file", "line", "rule", "message"])
 
-              if not os.path.exists(sarif_file) or os.path.getsize(sarif_file) == 0:
-                  print("No SARIF file found or empty; wrote header only.")
+              if not os.path.exists(sarif_file):
+                  print("SARIF artifact not found after download.")
                   raise SystemExit(0)
 
               data = json.load(open(sarif_file, "r", encoding="utf-8"))
@@ -106,7 +87,6 @@ jobs:
         with:
           name: secrets-findings
           path: secrets-findings.csv
-          if-no-files-found: warn
 
   pylint_scan:
     name: Pylint Scan (JSON -> CSV)
@@ -130,8 +110,6 @@ jobs:
       - name: Run pylint (JSON)
         run: |
           PY_FILES=$(git ls-files '*.py' || true)
-
-          # Always create report files so artifacts upload never fails
           if [ -z "$PY_FILES" ]; then
             echo "[]" > pylint-report.json
           else
@@ -167,7 +145,6 @@ jobs:
                       i.get("type"),
                       i.get("symbol")
                   ])
-
           print("pylint-findings.csv created")
           PY
 
@@ -179,4 +156,3 @@ jobs:
           path: |
             pylint-report.json
             pylint-findings.csv
-          if-no-files-found: warn
