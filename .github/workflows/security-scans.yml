@@ -17,16 +17,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run gitleaks secret scan (SARIF)
+      # NOTE: This action in your environment DOES NOT accept "args:"
+      # It produces gitleaks-results.sarif by default.
+      - name: Run gitleaks
         uses: gitleaks/gitleaks-action@v2
-        with:
-          args: detect --source . --no-git --report-format sarif --report-path gitleaks-report.sarif --exit-code 1 --verbose
 
-      - name: Ensure SARIF report exists
+      # Ensure the SARIF exists so artifact upload never breaks
+      - name: Ensure SARIF exists
         if: always()
         run: |
-          if [ ! -f gitleaks-report.sarif ]; then
-            cat > gitleaks-report.sarif <<'EOF'
+          if [ ! -f gitleaks-results.sarif ]; then
+            cat > gitleaks-results.sarif <<'EOF'
             {"version":"2.1.0","runs":[]}
             EOF
           fi
@@ -36,7 +37,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gitleaks-report
-          path: gitleaks-report.sarif
+          path: gitleaks-results.sarif
           if-no-files-found: warn
 
   convert_secret_report:
@@ -65,7 +66,7 @@ jobs:
           python - <<'PY'
           import json, csv, os
 
-          sarif_file = "gitleaks-report.sarif"
+          sarif_file = "gitleaks-results.sarif"
           csv_file = "secrets-findings.csv"
 
           with open(csv_file, "w", newline="", encoding="utf-8") as f:
@@ -120,7 +121,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install pylint
         run: |
@@ -130,16 +130,15 @@ jobs:
       - name: Run pylint (JSON)
         run: |
           PY_FILES=$(git ls-files '*.py' || true)
+
+          # Always create report files so artifacts upload never fails
           if [ -z "$PY_FILES" ]; then
             echo "[]" > pylint-report.json
-            echo "No Python files found; created empty pylint report."
-            exit 0
-          fi
-
-          pylint $PY_FILES --output-format=json > pylint-report.json || true
-
-          if [ ! -s pylint-report.json ]; then
-            echo "[]" > pylint-report.json
+          else
+            pylint $PY_FILES --output-format=json > pylint-report.json || true
+            if [ ! -s pylint-report.json ]; then
+              echo "[]" > pylint-report.json
+            fi
           fi
 
       - name: Convert pylint JSON -> CSV
