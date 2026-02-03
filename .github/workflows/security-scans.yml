@@ -1,0 +1,240 @@
+
+stages:
+
+  - security
+
+ 
+
+# ---------------------------------------
+
+# Secret Scan using Gitleaks
+
+# ---------------------------------------
+
+gitleaks_scan:
+
+  stage: security
+
+  image:
+
+    name: zricethezav/gitleaks:latest
+
+    entrypoint: [""]
+
+  script:
+
+    - echo "Running gitleaks secret scan..."
+
+    - gitleaks detect --source . --no-git --report-format json --report-path gitleaks-report.json --exit-code 1 --verbose
+
+  artifacts:
+
+    when: always
+
+    paths:
+
+      - gitleaks-report.json
+
+  allow_failure: true  # allows downstream jobs to run even if secrets found
+
+ 
+
+# ---------------------------------------
+
+# Convert Gitleaks Report to CSV (always runs)
+
+# ---------------------------------------
+
+convert_secret_report:
+
+  stage: security
+
+  image: python:3.11
+
+  needs:
+
+    - job: gitleaks_scan
+
+      artifacts: true
+
+      optional: true
+
+  script:
+
+    - echo "Converting gitleaks report to CSV..."
+
+    - |
+
+      python <<EOF
+
+      import json, csv, os
+
+ 
+
+      input_file = "gitleaks-report.json"
+
+      output_file = "secrets-findings.csv"
+
+ 
+
+      if not os.path.exists(input_file):
+
+          print("No gitleaks report found, creating empty CSV")
+
+          with open(output_file, "w", newline="") as f:
+
+              writer = csv.writer(f)
+
+              writer.writerow(["file", "line", "rule", "secret_masked"])
+
+          EOF_exit = 0
+
+      else:
+
+          with open(input_file) as f:
+
+              data = json.load(f)
+
+ 
+
+          findings = data if isinstance(data, list) else data.get("findings", [])
+
+ 
+
+          with open(output_file, "w", newline="") as f:
+
+              writer = csv.writer(f)
+
+              writer.writerow(["file","line","rule","secret_masked"])
+
+              for item in findings:
+
+                  secret = item.get("Secret", "")
+
+                  masked = secret[:4] + "*"*max(0,len(secret)-7) + secret[-3:] if secret else ""
+
+                  writer.writerow([
+
+                      item.get("File"),
+
+                      item.get("StartLine"),
+
+                      item.get("RuleID"),
+
+                      masked
+
+                  ])
+
+          print(f"CSV generated: {output_file} ({len(findings)} secrets)")
+
+      EOF
+
+  artifacts:
+
+    when: always
+
+    paths:
+
+      - secrets-findings.csv
+
+ 
+
+# ---------------------------------------
+
+# Pylint Scan (always runs)
+
+# ---------------------------------------
+
+pylint_scan:
+
+  stage: security
+
+  image: python:3.11
+
+  needs:
+
+    - job: convert_secret_report
+
+      artifacts: true
+
+      optional: true
+
+  script:
+
+    - pip install --no-cache-dir pylint
+
+    - echo "Running pylint scan on Python files..."
+
+    - pylint $(git ls-files '*.py') --output-format=json > pylint-report.json || true
+
+ 
+
+    - echo "Generating CSV for pylint findings..."
+
+    - |
+
+      python <<EOF
+
+      import json, csv, os
+
+ 
+
+      json_file = "pylint-report.json"
+
+      csv_file = "pylint-findings.csv"
+
+ 
+
+      with open(csv_file, "w", newline="") as f:
+
+          writer = csv.writer(f)
+
+          writer.writerow(["file","line","message","severity","rule"])
+
+ 
+
+          if os.path.exists(json_file) and os.path.getsize(json_file) > 0:
+
+              try:
+
+                  issues = json.load(open(json_file))
+
+                  for i in issues:
+
+                      writer.writerow([
+
+                          i.get("path"),
+
+                          i.get("line"),
+
+                          i.get("message"),
+
+                          i.get("type"),
+
+                          i.get("symbol")
+
+                      ])
+
+              except Exception as e:
+
+                  print("Error parsing pylint JSON:", e)
+
+          else:
+
+              print("No pylint issues detected or JSON file empty")
+
+ 
+
+      print("pylint-findings.csv created")
+
+      EOF
+
+  artifacts:
+
+    when: always
+
+    paths:
+
+      - pylint-report.json
+
+      - pylint-findings.csv
