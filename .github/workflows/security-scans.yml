@@ -1,10 +1,8 @@
 name: Security Scans (Gitleaks + Pylint)
 
 on:
-  pull_request:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ "main" ]   # runs on every merge into main
 
 permissions:
   contents: read
@@ -50,6 +48,7 @@ jobs:
         run: |
           python - <<'PY'
           import json, csv, os
+
           input_file = "gitleaks-report.json"
           output_file = "secrets-findings.csv"
 
@@ -60,14 +59,22 @@ jobs:
           else:
               with open(input_file) as f:
                   data = json.load(f)
+
               findings = data if isinstance(data, list) else data.get("findings", [])
+
               with open(output_file, "w", newline="") as f:
                   w = csv.writer(f)
                   w.writerow(["file","line","rule","secret_masked"])
                   for item in findings:
                       secret = item.get("Secret","") or ""
                       masked = (secret[:4] + "*"*max(0,len(secret)-7) + secret[-3:]) if secret else ""
-                      w.writerow([item.get("File"), item.get("StartLine"), item.get("RuleID"), masked])
+                      w.writerow([
+                          item.get("File"),
+                          item.get("StartLine"),
+                          item.get("RuleID"),
+                          masked
+                      ])
+
               print(f"CSV generated: {output_file} ({len(findings)} secrets)")
           PY
 
@@ -102,6 +109,7 @@ jobs:
         run: |
           python - <<'PY'
           import json, csv, os
+
           json_file = "pylint-report.json"
           csv_file = "pylint-findings.csv"
 
@@ -113,7 +121,13 @@ jobs:
                   try:
                       issues = json.load(open(json_file))
                       for i in issues:
-                          w.writerow([i.get("path"), i.get("line"), i.get("message"), i.get("type"), i.get("symbol")])
+                          w.writerow([
+                              i.get("path"),
+                              i.get("line"),
+                              i.get("message"),
+                              i.get("type"),
+                              i.get("symbol")
+                          ])
                   except Exception as e:
                       print("Error parsing pylint JSON:", e)
               else:
