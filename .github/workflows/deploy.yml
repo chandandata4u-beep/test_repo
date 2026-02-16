@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -25,9 +27,45 @@ jobs:
       - name: Verify assumed role
         run: aws sts get-caller-identity
 
-      - name: Deploy to S3
+      - name: Deploy only changed files to S3
+        shell: bash
         run: |
-          aws s3 sync . s3://chandan-cicd-test-bucket/ \
-            --delete \
-            --exclude ".git/*" \
-            --exclude ".github/*"
+          set -euo pipefail
+
+          BUCKET="s3://chandan-cicd-test-bucket"
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          echo "Diffing: $BEFORE -> $AFTER"
+
+          git diff --name-status "$BEFORE" "$AFTER" > /tmp/changes.txt || true
+          cat /tmp/changes.txt
+
+          while read -r status path rest; do
+            [ -z "${status:-}" ] && continue
+
+            if [[ "$path" == .git/* || "$path" == .github/* ]]; then
+              continue
+            fi
+
+            case "$status" in
+              A|M)
+                echo "Uploading: $path"
+                aws s3 cp "$path" "$BUCKET/$path"
+                ;;
+              R*)
+                old="$path"
+                new="$rest"
+                echo "Rename detected: $old -> $new"
+                aws s3 rm "$BUCKET/$old" || true
+                aws s3 cp "$new" "$BUCKET/$new"
+                ;;
+              D)
+                echo "Deleting: $path"
+                aws s3 rm "$BUCKET/$path" || true
+                ;;
+              *)
+                echo "Skipping status=$status path=$path"
+                ;;
+            esac
+          done < /tmp/changes.txt
