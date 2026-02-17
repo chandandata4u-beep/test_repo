@@ -27,7 +27,7 @@ jobs:
       - name: Verify assumed role
         run: aws sts get-caller-identity
 
-      - name: Deploy only changed files to S3 (with dynamic path mapping)
+      - name: Deploy only changed files to S3 (with optional mapping)
         shell: bash
         run: |
           set -euo pipefail
@@ -39,45 +39,35 @@ jobs:
 
           echo "Diffing: $BEFORE -> $AFTER"
 
+          # name-status output is TAB-separated; rename lines have 3 fields.
           git diff --name-status "$BEFORE" "$AFTER" > /tmp/changes.txt || true
-          cat /tmp/changes.txt
+          echo "Changes:"
+          cat /tmp/changes.txt || true
 
-          # --- Load mapping (optional file) ---
-          EXACT_B64="e30="
-          PREFIX_B64="e30="
-
-          if [[ -f "$MAP_FILE" ]]; then
-            echo "Using mapping file: $MAP_FILE"
-            python3 - <<'PY' > /tmp/map.env
-import json, base64
-p = ".cicd/s3-path-map.json"
-m = json.load(open(p, "r", encoding="utf-8"))
-exact = m.get("exact", {}) or {}
-prefix = m.get("prefix", {}) or {}
-print("EXACT_B64=" + base64.b64encode(json.dumps(exact).encode()).decode())
-print("PREFIX_B64=" + base64.b64encode(json.dumps(prefix).encode()).decode())
-PY
-            source /tmp/map.env
-          else
-            echo "No mapping file found. Using default same-path deployment."
-          fi
-
-          # --- Helper: map local path -> S3 key ---
           map_to_s3_key () {
             local local_path="$1"
-            python3 - <<'PY' "$local_path"
-import os, json, base64, sys
+            python3 - "$local_path" "$MAP_FILE" <<'PY'
+import json, os, sys
+
 local_path = sys.argv[1]
+map_file = sys.argv[2]
 
-exact = json.loads(base64.b64decode(os.environ.get("EXACT_B64","e30=")).decode())
-prefix = json.loads(base64.b64decode(os.environ.get("PREFIX_B64","e30=")).decode())
+# Default: same path as repo
+exact = {}
+prefix = {}
 
-# Exact mapping
+if os.path.isfile(map_file):
+    with open(map_file, "r", encoding="utf-8") as f:
+        m = json.load(f)
+    exact = m.get("exact", {}) or {}
+    prefix = m.get("prefix", {}) or {}
+
+# Exact match wins
 if local_path in exact:
     print(exact[local_path])
-    sys.exit(0)
+    raise SystemExit(0)
 
-# Longest prefix match
+# Longest prefix wins
 best_src = None
 best_dst = None
 for src, dst in prefix.items():
@@ -92,11 +82,11 @@ else:
 PY
           }
 
-          # --- Process changes ---
-          while read -r status path rest; do
+          # Read TAB-separated fields safely
+          while IFS=$'\t' read -r status path rest; do
             [[ -z "${status:-}" ]] && continue
 
-            # ignore git and workflow files
+            # Ignore CI metadata
             if [[ "$path" == .git/* || "$path" == .github/* ]]; then
               continue
             fi
@@ -108,28 +98,33 @@ PY
                 aws s3 cp "$path" "$BUCKET/$s3_key"
                 ;;
 
-              R*)
-                old="$path"
-                new="$rest"
-
-                old_key="$(map_to_s3_key "$old")"
-                new_key="$(map_to_s3_key "$new")"
-
-                echo "Rename detected: $old -> $new"
-                echo "S3: $old_key -> $new_key"
-
-                aws s3 rm "$BUCKET/$old_key" || true
-                aws s3 cp "$new" "$BUCKET/$new_key"
-                ;;
-
               D)
                 del_key="$(map_to_s3_key "$path")"
                 echo "Deleting: $path -> $BUCKET/$del_key"
                 aws s3 rm "$BUCKET/$del_key" || true
                 ;;
 
+              R*)
+                old="$path"
+                new="$rest"
+
+                # Ignore CI metadata rename too
+                if [[ "$new" == .git/* || "$new" == .github/* ]]; then
+                  continue
+                fi
+
+                old_key="$(map_to_s3_key "$old")"
+                new_key="$(map_to_s3_key "$new")"
+
+                echo "Rename: $old -> $new"
+                echo "S3: $old_key -> $new_key"
+
+                aws s3 rm "$BUCKET/$old_key" || true
+                aws s3 cp "$new" "$BUCKET/$new_key"
+                ;;
+
               *)
-                echo "Skipping status=$status path=$path"
+                echo "Skipping: status=$status path=$path rest=${rest:-}"
                 ;;
             esac
           done < /tmp/changes.txt
