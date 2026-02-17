@@ -38,55 +38,33 @@ jobs:
           MAP_FILE=".cicd/s3-path-map.json"
 
           echo "Diffing: $BEFORE -> $AFTER"
-
-          # name-status output is TAB-separated; rename lines have 3 fields.
           git diff --name-status "$BEFORE" "$AFTER" > /tmp/changes.txt || true
-          echo "Changes:"
           cat /tmp/changes.txt || true
 
           map_to_s3_key () {
             local local_path="$1"
-            python3 - "$local_path" "$MAP_FILE" <<'PY'
-import json, os, sys
-
-local_path = sys.argv[1]
-map_file = sys.argv[2]
-
-# Default: same path as repo
-exact = {}
-prefix = {}
-
-if os.path.isfile(map_file):
-    with open(map_file, "r", encoding="utf-8") as f:
-        m = json.load(f)
-    exact = m.get("exact", {}) or {}
-    prefix = m.get("prefix", {}) or {}
-
-# Exact match wins
-if local_path in exact:
-    print(exact[local_path])
-    raise SystemExit(0)
-
-# Longest prefix wins
-best_src = None
-best_dst = None
-for src, dst in prefix.items():
-    if local_path.startswith(src):
-        if best_src is None or len(src) > len(best_src):
-            best_src, best_dst = src, dst
-
-if best_src:
-    print(best_dst + local_path[len(best_src):])
-else:
-    print(local_path)
-PY
+            python3 -c 'import json, os, sys
+p=sys.argv[1]; mf=sys.argv[2]
+exact={}; prefix={}
+if os.path.isfile(mf):
+  m=json.load(open(mf,"r",encoding="utf-8"))
+  exact=m.get("exact",{}) or {}
+  prefix=m.get("prefix",{}) or {}
+if p in exact:
+  print(exact[p]); sys.exit(0)
+best_src=None; best_dst=None
+for src,dst in prefix.items():
+  if p.startswith(src) and (best_src is None or len(src)>len(best_src)):
+    best_src=src; best_dst=dst
+print((best_dst + p[len(best_src):]) if best_src else p)
+' "$local_path" "$MAP_FILE"
           }
 
-          # Read TAB-separated fields safely
+          # git diff --name-status is TAB-separated; rename lines have 3 columns.
           while IFS=$'\t' read -r status path rest; do
             [[ -z "${status:-}" ]] && continue
 
-            # Ignore CI metadata
+            # Ignore meta files
             if [[ "$path" == .git/* || "$path" == .github/* ]]; then
               continue
             fi
@@ -97,18 +75,16 @@ PY
                 echo "Uploading: $path -> $BUCKET/$s3_key"
                 aws s3 cp "$path" "$BUCKET/$s3_key"
                 ;;
-
               D)
                 del_key="$(map_to_s3_key "$path")"
                 echo "Deleting: $path -> $BUCKET/$del_key"
                 aws s3 rm "$BUCKET/$del_key" || true
                 ;;
-
               R*)
                 old="$path"
                 new="$rest"
 
-                # Ignore CI metadata rename too
+                # Ignore meta files on rename target too
                 if [[ "$new" == .git/* || "$new" == .github/* ]]; then
                   continue
                 fi
@@ -122,7 +98,6 @@ PY
                 aws s3 rm "$BUCKET/$old_key" || true
                 aws s3 cp "$new" "$BUCKET/$new_key"
                 ;;
-
               *)
                 echo "Skipping: status=$status path=$path rest=${rest:-}"
                 ;;
