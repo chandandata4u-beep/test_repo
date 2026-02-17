@@ -1,0 +1,6 @@
+{
+  "exact": {
+    "script/file/git_sync.py": "miscellaneous/scripts/git_sync.py"
+  },
+  "prefix": {}
+}
