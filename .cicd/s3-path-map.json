@@ -1,6 +1,7 @@
 {
   "exact": {
-    "script/file/git_sync.py": "miscellaneous/scripts/git_sync.py"
+    "script/file/git_sync.py": "miscellaneous/scripts/git_sync.py",
+    "script/file/collibra_job.py": "chandan/personal/file/my_qatest.py"
   },
   "prefix": {}
 }
