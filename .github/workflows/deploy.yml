@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
 
           BUCKET="s3://chandan-cicd-test-bucket"
-          MAPPING_FILE="s3-path-map.json"
+          MAPPING_FILE=".cicd/s3-path-map.json"
 
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
