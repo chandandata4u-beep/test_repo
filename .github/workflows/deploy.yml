@@ -2,11 +2,14 @@ name: Deploy to S3 using OIDC
 
 on:
   push:
-    branches: ["main"]
+    branches: ["dev", "test", "main"]
 
 jobs:
-  deploy:
+  deploy-dev:
+    name: Deploy (DEV)
+    if: github.ref_name == 'dev'
     runs-on: ubuntu-latest
+    environment: dev
 
     permissions:
       id-token: write
@@ -18,6 +21,14 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Debug (repo/ref + secrets present?)
+        run: |
+          echo "repository=${{ github.repository }}"
+          echo "ref=${{ github.ref }}"
+          echo "ref_name=${{ github.ref_name }}"
+          echo "AWS_ROLE_ARN=${{ secrets.AWS_ROLE_ARN != '' && 'SET' || 'EMPTY' }}"
+          echo "AWS_REGION=${{ secrets.AWS_REGION != '' && 'SET' || 'EMPTY' }}"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -27,26 +38,26 @@ jobs:
       - name: Verify assumed role
         run: aws sts get-caller-identity
 
-      - name: Deploy only changed files to S3 (with mapping)
+      - name: Deploy only changed files to S3 (DEV)
         shell: bash
         run: |
           set -euo pipefail
 
-          BUCKET="s3://chandan-cicd-test-bucket"
+          BUCKET="s3://chandan-cicd-test-bucket-dev"
           MAPPING_FILE=".cicd/s3-path-map.json"
 
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
 
+          echo "ENV=dev"
+          echo "BUCKET=$BUCKET"
           echo "Diffing: $BEFORE -> $AFTER"
 
-          # Ensure we have the 'before' commit available even with shallow checkout
           if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             echo "BEFORE commit not present locally (shallow clone). Fetching more history..."
             git fetch --no-tags --prune --depth=50 origin "${{ github.ref_name }}"
           fi
 
-          # If still not present (e.g., first push / new branch), fallback safely
           if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             echo "BEFORE commit still not available. Falling back to previous commit (if exists)."
             if git rev-parse HEAD^ >/dev/null 2>&1; then
@@ -62,7 +73,6 @@ jobs:
             fi
           fi
 
-          # If changes.txt not created by fallback above, generate from diff
           if [ ! -f /tmp/changes.txt ]; then
             git diff --name-status -M --find-renames "$BEFORE" "$AFTER" > /tmp/changes.txt || true
           fi
@@ -71,7 +81,12 @@ jobs:
           cat /tmp/changes.txt || true
           echo "-----------------"
 
-          # Mapping loader (jq). If mapping file missing/invalid -> treat as empty mapping.
+          # Ensure jq exists (ubuntu-latest usually has it, but keep safe)
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
           if [ -f "$MAPPING_FILE" ]; then
             if ! jq -e . "$MAPPING_FILE" >/dev/null 2>&1; then
               echo "WARNING: $MAPPING_FILE exists but is not valid JSON. Mapping will be ignored."
@@ -84,13 +99,11 @@ jobs:
             HAS_MAPPING="0"
           fi
 
-          # Convert local repo path -> S3 key using mapping rules
           map_dest_key() {
             local src="$1"
             local dest="$src"
 
             if [ "$HAS_MAPPING" = "1" ]; then
-              # exact mapping
               local exact
               exact="$(jq -r --arg s "$src" '.exact[$s] // empty' "$MAPPING_FILE")"
               if [ -n "${exact:-}" ]; then
@@ -98,13 +111,9 @@ jobs:
                 return 0
               fi
 
-              # prefix mapping (longest prefix wins)
-              # prefix object is like: { "script/": "misc/scripts/" }
               local best_src=""
               local best_dest=""
-
               while IFS=$'\t' read -r k v; do
-                # k/v come from jq as tab-separated
                 if [[ "$src" == "$k"* ]]; then
                   if [ "${#k}" -gt "${#best_src}" ]; then
                     best_src="$k"
@@ -121,68 +130,383 @@ jobs:
             echo "$dest"
           }
 
-          # helper: upload one file safely
           upload_file() {
             local src="$1"
             local key="$2"
-
-            if [ ! -f "$src" ]; then
-              echo "WARNING: Source file not found (skipping): $src"
-              return 0
-            fi
-
+            [ -f "$src" ] || { echo "WARNING: missing file (skip): $src"; return 0; }
             echo "Uploading: $src -> $BUCKET/$key"
             aws s3 cp "$src" "$BUCKET/$key"
           }
 
-          # helper: delete key safely
           delete_key() {
             local key="$1"
             echo "Deleting: $BUCKET/$key"
             aws s3 rm "$BUCKET/$key" || true
           }
 
-          # Nothing changed? Exit cleanly.
-          if [ ! -s /tmp/changes.txt ]; then
-            echo "No changes detected. Exiting."
-            exit 0
-          fi
+          [ -s /tmp/changes.txt ] || { echo "No changes detected. Exiting."; exit 0; }
 
-          # Process diff lines
           while IFS=$'\t' read -r status p1 p2; do
             [ -z "${status:-}" ] && continue
 
-            # ignore internal paths
-            if [[ "${p1:-}" == .git/* || "${p1:-}" == .github/* ]]; then
-              continue
-            fi
-            if [[ "${p2:-}" == .git/* || "${p2:-}" == .github/* ]]; then
-              continue
-            fi
+            if [[ "${p1:-}" == .git/* || "${p1:-}" == .github/* ]]; then continue; fi
+            if [[ "${p2:-}" == .git/* || "${p2:-}" == .github/* ]]; then continue; fi
 
             case "$status" in
               A|M)
                 dest="$(map_dest_key "$p1")"
                 upload_file "$p1" "$dest"
                 ;;
-
               D)
                 dest="$(map_dest_key "$p1")"
                 delete_key "$dest"
                 ;;
-
-              R* )
-                # rename: p1=old, p2=new
+              R*)
                 old_dest="$(map_dest_key "$p1")"
                 new_dest="$(map_dest_key "$p2")"
-
                 echo "Rename detected: $p1 -> $p2"
                 delete_key "$old_dest"
                 upload_file "$p2" "$new_dest"
                 ;;
-
-              * )
+              *)
                 echo "Skipping status=$status p1=${p1:-} p2=${p2:-}"
                 ;;
             esac
           done < /tmp/changes.txt
+
+  deploy-test:
+    name: Deploy (TEST)
+    if: github.ref_name == 'test'
+    runs-on: ubuntu-latest
+    environment: test
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Debug (repo/ref + secrets present?)
+        run: |
+          echo "repository=${{ github.repository }}"
+          echo "ref=${{ github.ref }}"
+          echo "ref_name=${{ github.ref_name }}"
+          echo "AWS_ROLE_ARN=${{ secrets.AWS_ROLE_ARN != '' && 'SET' || 'EMPTY' }}"
+          echo "AWS_REGION=${{ secrets.AWS_REGION != '' && 'SET' || 'EMPTY' }}"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify assumed role
+        run: aws sts get-caller-identity
+
+      - name: Deploy only changed files to S3 (TEST)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET="s3://chandan-cicd-test-bucket-test"
+          MAPPING_FILE=".cicd/s3-path-map.json"
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          echo "ENV=test"
+          echo "BUCKET=$BUCKET"
+          echo "Diffing: $BEFORE -> $AFTER"
+
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "BEFORE commit not present locally (shallow clone). Fetching more history..."
+            git fetch --no-tags --prune --depth=50 origin "${{ github.ref_name }}"
+          fi
+
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "BEFORE commit still not available. Falling back to previous commit (if exists)."
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              BEFORE="$(git rev-parse HEAD^)"
+              echo "Using fallback BEFORE=$BEFORE"
+            else
+              echo "No previous commit exists; deploying all tracked files."
+              git ls-files > /tmp/all_files.txt
+              : > /tmp/changes.txt
+              while read -r f; do
+                echo -e "A\t$f" >> /tmp/changes.txt
+              done < /tmp/all_files.txt
+            fi
+          fi
+
+          if [ ! -f /tmp/changes.txt ]; then
+            git diff --name-status -M --find-renames "$BEFORE" "$AFTER" > /tmp/changes.txt || true
+          fi
+
+          echo "---- CHANGES ----"
+          cat /tmp/changes.txt || true
+          echo "-----------------"
+
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
+          if [ -f "$MAPPING_FILE" ]; then
+            if ! jq -e . "$MAPPING_FILE" >/dev/null 2>&1; then
+              echo "WARNING: $MAPPING_FILE exists but is not valid JSON. Mapping will be ignored."
+              HAS_MAPPING="0"
+            else
+              HAS_MAPPING="1"
+            fi
+          else
+            echo "INFO: $MAPPING_FILE not found. Proceeding without mapping."
+            HAS_MAPPING="0"
+          fi
+
+          map_dest_key() {
+            local src="$1"
+            local dest="$src"
+
+            if [ "$HAS_MAPPING" = "1" ]; then
+              local exact
+              exact="$(jq -r --arg s "$src" '.exact[$s] // empty' "$MAPPING_FILE")"
+              if [ -n "${exact:-}" ]; then
+                echo "$exact"
+                return 0
+              fi
+
+              local best_src=""
+              local best_dest=""
+              while IFS=$'\t' read -r k v; do
+                if [[ "$src" == "$k"* ]]; then
+                  if [ "${#k}" -gt "${#best_src}" ]; then
+                    best_src="$k"
+                    best_dest="$v"
+                  fi
+                fi
+              done < <(jq -r '.prefix // {} | to_entries[] | "\(.key)\t\(.value)"' "$MAPPING_FILE" 2>/dev/null || true)
+
+              if [ -n "${best_src:-}" ]; then
+                dest="${best_dest}${src#${best_src}}"
+              fi
+            fi
+
+            echo "$dest"
+          }
+
+          upload_file() {
+            local src="$1"
+            local key="$2"
+            [ -f "$src" ] || { echo "WARNING: missing file (skip): $src"; return 0; }
+            echo "Uploading: $src -> $BUCKET/$key"
+            aws s3 cp "$src" "$BUCKET/$key"
+          }
+
+          delete_key() {
+            local key="$1"
+            echo "Deleting: $BUCKET/$key"
+            aws s3 rm "$BUCKET/$key" || true
+          }
+
+          [ -s /tmp/changes.txt ] || { echo "No changes detected. Exiting."; exit 0; }
+
+          while IFS=$'\t' read -r status p1 p2; do
+            [ -z "${status:-}" ] && continue
+
+            if [[ "${p1:-}" == .git/* || "${p1:-}" == .github/* ]]; then continue; fi
+            if [[ "${p2:-}" == .git/* || "${p2:-}" == .github/* ]]; then continue; fi
+
+            case "$status" in
+              A|M)
+                dest="$(map_dest_key "$p1")"
+                upload_file "$p1" "$dest"
+                ;;
+              D)
+                dest="$(map_dest_key "$p1")"
+                delete_key "$dest"
+                ;;
+              R*)
+                old_dest="$(map_dest_key "$p1")"
+                new_dest="$(map_dest_key "$p2")"
+                echo "Rename detected: $p1 -> $p2"
+                delete_key "$old_dest"
+                upload_file "$p2" "$new_dest"
+                ;;
+              *)
+                echo "Skipping status=$status p1=${p1:-} p2=${p2:-}"
+                ;;
+            esac
+          done < /tmp/changes.txt
+
+  deploy-prod:
+    name: Deploy (PROD)
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    environment: prod
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Debug (repo/ref + secrets present?)
+        run: |
+          echo "repository=${{ github.repository }}"
+          echo "ref=${{ github.ref }}"
+          echo "ref_name=${{ github.ref_name }}"
+          echo "AWS_ROLE_ARN=${{ secrets.AWS_ROLE_ARN != '' && 'SET' || 'EMPTY' }}"
+          echo "AWS_REGION=${{ secrets.AWS_REGION != '' && 'SET' || 'EMPTY' }}"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify assumed role
+        run: aws sts get-caller-identity
+
+      - name: Deploy only changed files to S3 (PROD)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET="s3://chandan-cicd-test-bucket"
+          MAPPING_FILE=".cicd/s3-path-map.json"
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          echo "ENV=prod"
+          echo "BUCKET=$BUCKET"
+          echo "Diffing: $BEFORE -> $AFTER"
+
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "BEFORE commit not present locally (shallow clone). Fetching more history..."
+            git fetch --no-tags --prune --depth=50 origin "${{ github.ref_name }}"
+          fi
+
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "BEFORE commit still not available. Falling back to previous commit (if exists)."
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              BEFORE="$(git rev-parse HEAD^)"
+              echo "Using fallback BEFORE=$BEFORE"
+            else
+              echo "No previous commit exists; deploying all tracked files."
+              git ls-files > /tmp/all_files.txt
+              : > /tmp/changes.txt
+              while read -r f; do
+                echo -e "A\t$f" >> /tmp/changes.txt
+              done < /tmp/all_files.txt
+            fi
+          fi
+
+          if [ ! -f /tmp/changes.txt ]; then
+            git diff --name-status -M --find-renames "$BEFORE" "$AFTER" > /tmp/changes.txt || true
+          fi
+
+          echo "---- CHANGES ----"
+          cat /tmp/changes.txt || true
+          echo "-----------------"
+
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
+          if [ -f "$MAPPING_FILE" ]; then
+            if ! jq -e . "$MAPPING_FILE" >/dev/null 2>&1; then
+              echo "WARNING: $MAPPING_FILE exists but is not valid JSON. Mapping will be ignored."
+              HAS_MAPPING="0"
+            else
+              HAS_MAPPING="1"
+            fi
+          else
+            echo "INFO: $MAPPING_FILE not found. Proceeding without mapping."
+            HAS_MAPPING="0"
+          fi
+
+          map_dest_key() {
+            local src="$1"
+            local dest="$src"
+
+            if [ "$HAS_MAPPING" = "1" ]; then
+              local exact
+              exact="$(jq -r --arg s "$src" '.exact[$s] // empty' "$MAPPING_FILE")"
+              if [ -n "${exact:-}" ]; then
+                echo "$exact"
+                return 0
+              fi
+
+              local best_src=""
+              local best_dest=""
+              while IFS=$'\t' read -r k v; do
+                if [[ "$src" == "$k"* ]]; then
+                  if [ "${#k}" -gt "${#best_src}" ]; then
+                    best_src="$k"
+                    best_dest="$v"
+                  fi
+                fi
+              done < <(jq -r '.prefix // {} | to_entries[] | "\(.key)\t\(.value)"' "$MAPPING_FILE" 2>/dev/null || true)
+
+              if [ -n "${best_src:-}" ]; then
+                dest="${best_dest}${src#${best_src}}"
+              fi
+            fi
+
+            echo "$dest"
+          }
+
+          upload_file() {
+            local src="$1"
+            local key="$2"
+            [ -f "$src" ] || { echo "WARNING: missing file (skip): $src"; return 0; }
+            echo "Uploading: $src -> $BUCKET/$key"
+            aws s3 cp "$src" "$BUCKET/$key"
+          }
+
+          delete_key() {
+            local key="$1"
+            echo "Deleting: $BUCKET/$key"
+            aws s3 rm "$BUCKET/$key" || true
+          }
+
+          [ -s /tmp/changes.txt ] || { echo "No changes detected. Exiting."; exit 0; }
+
+          while IFS=$'\t' read -r status p1 p2; do
+            [ -z "${status:-}" ] && continue
+
+            if [[ "${p1:-}" == .git/* || "${p1:-}" == .github/* ]]; then continue; fi
+            if [[ "${p2:-}" == .git/* || "${p2:-}" == .github/* ]]; then continue; fi
+
+            case "$status" in
+              A|M)
+                dest="$(map_dest_key "$p1")"
+                upload_file "$p1" "$dest"
+                ;;
+              D)
+                dest="$(map_dest_key "$p1")"
+                delete_key "$dest"
+                ;;
+              R*)
+                old_dest="$(map_dest_key "$p1")"
+                new_dest="$(map_dest_key "$p2")"
+                echo "Rename detected: $p1 -> $p2"
+                delete_key "$old_dest"
+                upload_file "$p2" "$new_dest"
+                ;;
+              *)
+                echo "Skipping status=$status p1=${p1:-} p2=${p2:-}"
+                ;;
+            esac
+          done < /tmp/changes.txt
+          
