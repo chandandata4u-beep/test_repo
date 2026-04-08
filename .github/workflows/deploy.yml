@@ -6,8 +6,8 @@ on:
 
 jobs:
   deploy-dev:
-    name: Deploy (DEV)
-    if: github.ref_name == 'dev'
+    name: Deploy (Main)
+    if: github.ref_name == 'main'
     runs-on: ubuntu-latest
     environment: dev
 
