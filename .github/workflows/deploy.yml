@@ -3,7 +3,7 @@ name: Deploy to S3 using OIDC
 on:
   push:
     branches: ["dev", "test", "main"]
-
+    
 jobs:
   deploy-dev:
     name: Deploy (Main)
