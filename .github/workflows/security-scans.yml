@@ -1,0 +1,174 @@
+name: Security Scans (Gitleaks JSON -> CSV + Pylint)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks_scan:
+    name: Gitleaks Scan (JSON)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run gitleaks (JSON report)
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            zricethezav/gitleaks:latest \
+            detect --source . --no-git --report-format json --report-path gitleaks-report.json --exit-code 1 --verbose || true
+
+      - name: Ensure gitleaks report exists
+        if: always()
+        run: |
+          if [ ! -f gitleaks-report.json ]; then
+            echo "[]" > gitleaks-report.json
+          fi
+
+      - name: Upload gitleaks JSON report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-json
+          path: gitleaks-report.json
+          if-no-files-found: warn
+
+  convert_secret_report:
+    name: Convert Gitleaks JSON to CSV
+    runs-on: ubuntu-latest
+    needs: [gitleaks_scan]
+    if: always()
+    steps:
+      - name: Download gitleaks JSON artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gitleaks-json
+          path: .
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Convert JSON -> CSV (masked secrets)
+        run: |
+          python - <<'PY'
+          import json, csv, os
+
+          input_file = "gitleaks-report.json"
+          output_file = "secrets-findings.csv"
+
+          def mask(secret: str) -> str:
+              if not secret:
+                  return ""
+              return secret[:4] + "*" * max(0, len(secret) - 7) + secret[-3:]
+
+          # Always create CSV
+          with open(output_file, "w", newline="", encoding="utf-8") as f:
+              w = csv.writer(f)
+              w.writerow(["file", "line", "rule", "secret_masked"])
+
+              if not os.path.exists(input_file) or os.path.getsize(input_file) == 0:
+                  print("No gitleaks JSON found or empty -> header only CSV.")
+                  raise SystemExit(0)
+
+              data = json.load(open(input_file, "r", encoding="utf-8"))
+              findings = data if isinstance(data, list) else data.get("findings", [])
+
+              for item in findings:
+                  secret = item.get("Secret", "") or ""
+                  w.writerow([
+                      item.get("File", ""),
+                      item.get("StartLine", ""),
+                      item.get("RuleID", ""),
+                      mask(secret)
+                  ])
+
+          print(f"CSV generated: {output_file} ({len(findings)} findings)")
+          PY
+
+      - name: Upload secrets CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secrets-findings
+          path: secrets-findings.csv
+          if-no-files-found: warn
+
+  pylint_scan:
+    name: Pylint Scan (JSON -> CSV)
+    runs-on: ubuntu-latest
+    needs: [convert_secret_report]
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pylint
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir pylint
+
+      - name: Run pylint (JSON)
+        run: |
+          PY_FILES=$(git ls-files '*.py' || true)
+          if [ -z "$PY_FILES" ]; then
+            echo "[]" > pylint-report.json
+          else
+            pylint $PY_FILES --output-format=json > pylint-report.json || true
+            if [ ! -s pylint-report.json ]; then
+              echo "[]" > pylint-report.json
+            fi
+          fi
+
+      - name: Convert pylint JSON -> CSV
+        run: |
+          python - <<'PY'
+          import json, csv, os
+
+          json_file = "pylint-report.json"
+          csv_file = "pylint-findings.csv"
+
+          issues = []
+          if os.path.exists(json_file) and os.path.getsize(json_file) > 0:
+              try:
+                  issues = json.load(open(json_file, "r", encoding="utf-8"))
+              except Exception:
+                  issues = []
+
+          with open(csv_file, "w", newline="", encoding="utf-8") as f:
+              w = csv.writer(f)
+              w.writerow(["file", "line", "message", "severity", "rule"])
+              for i in issues:
+                  w.writerow([
+                      i.get("path"),
+                      i.get("line"),
+                      i.get("message"),
+                      i.get("type"),
+                      i.get("symbol")
+                  ])
+
+          print("pylint-findings.csv created")
+          PY
+
+      - name: Upload pylint artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pylint-reports
+          path: |
+            pylint-report.json
+            pylint-findings.csv
+          if-no-files-found: warn

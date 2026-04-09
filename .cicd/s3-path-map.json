@@ -1,0 +1,7 @@
+{
+  "exact": {
+    "script/file/git_sync.py": "misc/work/data/test_t1.py",
+    "script/file/collibra_job.py": "script/chandan/file/new/us/request.py"
+  },
+  "prefix": {}
+}
