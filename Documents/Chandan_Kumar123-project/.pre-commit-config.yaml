@@ -1,0 +1,7 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: gitleaks (block commit/push if secrets)
+        args: ["protect", "--staged", "--config=.gitleaks.toml"]

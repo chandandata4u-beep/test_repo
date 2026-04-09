@@ -1,0 +1,63 @@
+title = "Custom Enterprise Gitleaks Rules - Python + Jinja Safe"
+
+# ============================================================
+# AWS ACCESS KEY
+# ============================================================
+[[rules]]
+id = "aws-access-key-id"
+description = "Detect AWS Access Key ID (AKIA...)"
+regex = '''\bAKIA[0-9A-Z]{16}\b'''
+tags = ["aws", "key"]
+
+# ============================================================
+# PYTHON: CREDENTIAL ASSIGNMENTS WITH '=' (Normal + Jinja)
+# Examples:
+#   password = "secret123"
+#   pass = "{{ 'secret123' }}"
+# ============================================================
+[[rules]]
+id = "python-credential-assignment"
+description = "Detect password/pass/pwd/passwd assignments in Python using = (normal or jinja)"
+regex = '''(?i)\b(password|pass|pwd|passwd)\b\s*=\s*(?:"\{\{\s*'([^'\n]{3,})'\s*\}\}"|["']([^"'\n]{6,})["'])'''
+path = '''(?i)\.py$'''
+tags = ["credentials", "python", "jinja"]
+
+# ============================================================
+# PYTHON: CREDENTIAL 'key:' STYLE WITH JINJA (':' inside .py)
+# Examples:
+#   pass: "{{ 'secret123' }}"
+#   password: "{{ 'secret123' }}"
+# (This is not valid Python syntax, but some repos keep templates in .py files)
+# ============================================================
+[[rules]]
+id = "python-credential-colon-jinja"
+description = "Detect password/pass/pwd/user written as key: \"{{ '...' }}\" inside Python files"
+regex = '''(?im)^\s*(password|pass|pwd|user|username)\s*:\s*"\{\{\s*'([^'\n]{3,})'\s*\}\}"\s*$'''
+path = '''(?i)\.py$'''
+tags = ["credentials", "python", "jinja"]
+
+# ============================================================
+# PYTHON: TOKEN / API KEY ASSIGNMENTS WITH '=' (Normal + Jinja)
+# Examples:
+#   token = "abcd123456"
+#   api_key = "{{ 'abcd123456' }}"
+# ============================================================
+[[rules]]
+id = "python-token-assignment"
+description = "Detect token/api_key/apikey/access_token assignments in Python using = (normal or jinja)"
+regex = '''(?i)\b(api_key|apikey|token|access_token|secret_key)\b\s*=\s*(?:"\{\{\s*'([^'\n]{3,})'\s*\}\}"|["']([^"'\n]{8,})["'])'''
+path = '''(?i)\.py$'''
+tags = ["apikey", "python", "jinja"]
+
+# ============================================================
+# CONFIG FILES (YAML / JSON / ENV) — Normal + Jinja
+# Examples:
+#   password: secret123
+#   pass: "{{ 'secret123' }}"
+# ============================================================
+[[rules]]
+id = "config-credential-keyvalue"
+description = "Detect hardcoded credentials in config files (normal or jinja)"
+regex = '''(?im)^\s*(password|pass|pwd|user|username)\s*:\s*(?:"\{\{\s*'([^'\n]{3,})'\s*\}\}"|(?:"([^"\n]{6,})"|'([^'\n]{6,})'|([^\s#\n]{6,})))\s*$'''
+path = '''(?i)\.(yml|yaml|json|toml|ini|conf|cfg|properties|env)$'''
+tags = ["credentials", "config", "jinja"]
