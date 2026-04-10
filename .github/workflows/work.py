@@ -1,0 +1,1 @@
+print("GOO JI")
