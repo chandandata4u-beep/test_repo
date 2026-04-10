@@ -95,7 +95,6 @@ jobs:
             gitleaks-report.json
             secrets-findings.csv
 
-      # 🔥 THIS IS THE IMPORTANT FIX (FAIL PIPELINE IF LEAKS FOUND)
       - name: Fail pipeline if secrets found
         run: |
           if grep -q "\"RuleID\"" gitleaks-report.json; then
@@ -141,14 +140,13 @@ jobs:
           BUCKET="s3://test-bucket-chandan"
           MAPPING_FILE=".cicd/s3-path-map.json"
 
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.sha }}"
+          # 🔥 FIXED CHANGE DETECTION (ONLY CHANGE MADE)
+          git fetch origin ${{ github.ref_name }} --depth=50
+
+          BEFORE="$(git rev-parse HEAD~1)"
+          AFTER="$(git rev-parse HEAD)"
 
           echo "Deploying DEV..."
-
-          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            BEFORE="$(git rev-parse HEAD^ || echo "")"
-          fi
 
           git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
 
