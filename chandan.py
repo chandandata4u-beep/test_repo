@@ -1,3 +1,3 @@
 print("hi")
 print("hello")
-passwrod = "IEDN3429!@#%jdbceu$%#"
+password = "!@%dhue92747JDUTIS*@&#"
