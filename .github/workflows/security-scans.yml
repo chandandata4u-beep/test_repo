@@ -63,12 +63,23 @@ jobs:
           inp = "gitleaks-report.json"
           out = "secrets-findings.csv"
 
+          findings = []
+
           if os.path.exists(inp) and os.path.getsize(inp) > 0:
               with open(inp, "r", encoding="utf-8") as f:
-                  data = json.load(f)
-              findings = data if isinstance(data, list) else data.get("findings", [])
-          else:
-              findings = []
+                  try:
+                      data = json.load(f)
+                  except Exception:
+                      data = None
+
+              # ✅ FIX: robust output normalization
+              if isinstance(data, list):
+                  findings = data
+              elif isinstance(data, dict):
+                  for key in ["findings", "Leaks", "Results", "data"]:
+                      if key in data and isinstance(data[key], list):
+                          findings = data[key]
+                          break
 
           def mask(v: str) -> str:
               if not v:
@@ -80,12 +91,13 @@ jobs:
           with open(out, "w", newline="", encoding="utf-8") as f:
               w = csv.writer(f)
               w.writerow(["file", "line", "rule", "secret_masked"])
+
               for i in findings:
                   w.writerow([
-                      i.get("File"),
-                      i.get("StartLine"),
-                      i.get("RuleID"),
-                      mask(i.get("Secret", ""))
+                      i.get("File") or i.get("file"),
+                      i.get("StartLine") or i.get("line"),
+                      i.get("RuleID") or i.get("rule"),
+                      mask(i.get("Secret", "")),
                   ])
 
           print(f"CSV generated: {out} ({len(findings)} secrets)")
