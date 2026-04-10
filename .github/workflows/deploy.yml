@@ -98,10 +98,10 @@ jobs:
       - name: Fail pipeline if secrets found
         run: |
           if grep -q "\"RuleID\"" gitleaks-report.json; then
-            echo "❌ Secrets detected. Failing pipeline."
+            echo "Secrets detected. Failing pipeline."
             exit 1
           else
-            echo "✅ No secrets found."
+            echo "No secrets found."
           fi
 
 
@@ -112,7 +112,7 @@ jobs:
     name: Deploy DEV to S3
     runs-on: ubuntu-latest
     needs: gitleaks_scan
-    if: github.ref_name == 'main'
+    if: github.ref_name == 'dev'
 
     permissions:
       id-token: write
@@ -132,24 +132,17 @@ jobs:
       - name: Verify AWS identity
         run: aws sts get-caller-identity
 
-      - name: Deploy to S3 (MAIN)
+      - name: Deploy DEV to S3
         shell: bash
         run: |
           set -euo pipefail
 
           BUCKET="s3://test-bucket-chandan"
-          MAPPING_FILE=".cicd/s3-path-map.json"
-
-          echo "Deploying MAIN..."
-
-          git fetch origin ${{ github.ref_name }} --depth=50
 
           git diff --name-status -M \
             ${{ github.event.before }} \
             ${{ github.event.after }} \
             > /tmp/changes.txt || true
-
-          echo "Deploying MAIN..."
 
           upload_file() {
             [ -f "$1" ] || return 0
@@ -200,9 +193,44 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Deploy TEST
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Deploy TEST to S3
+        shell: bash
         run: |
-          echo "TEST deploy logic stays same"
+          set -euo pipefail
+
+          BUCKET="s3://test-bucket-chandan"
+
+          git diff --name-status -M \
+            ${{ github.event.before }} \
+            ${{ github.event.after }} \
+            > /tmp/changes.txt || true
+
+          upload_file() {
+            [ -f "$1" ] || return 0
+            aws s3 cp "$1" "$BUCKET/$2"
+          }
+
+          map_dest_key() {
+            echo "$1"
+          }
+
+          while IFS=$'\t' read -r status p1 p2; do
+            case "$status" in
+              A|M)
+                upload_file "$p1" "$(map_dest_key "$p1")"
+                ;;
+              D)
+                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
+                ;;
+              R*)
+                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
+                upload_file "$p2" "$(map_dest_key "$p2")"
+                ;;
+            esac
+          done < /tmp/changes.txt
 
 
 # =========================
@@ -212,7 +240,7 @@ jobs:
     name: Deploy PROD to S3
     runs-on: ubuntu-latest
     needs: gitleaks_scan
-    if: github.ref_name == 'dev'
+    if: github.ref_name == 'main'
 
     permissions:
       id-token: write
@@ -229,6 +257,41 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Deploy PROD
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Deploy PROD to S3
+        shell: bash
         run: |
-          echo "PROD deploy logic stays same"
+          set -euo pipefail
+
+          BUCKET="s3://test-bucket-chandan"
+
+          git diff --name-status -M \
+            ${{ github.event.before }} \
+            ${{ github.event.after }} \
+            > /tmp/changes.txt || true
+
+          upload_file() {
+            [ -f "$1" ] || return 0
+            aws s3 cp "$1" "$BUCKET/$2"
+          }
+
+          map_dest_key() {
+            echo "$1"
+          }
+
+          while IFS=$'\t' read -r status p1 p2; do
+            case "$status" in
+              A|M)
+                upload_file "$p1" "$(map_dest_key "$p1")"
+                ;;
+              D)
+                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
+                ;;
+              R*)
+                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
+                upload_file "$p2" "$(map_dest_key "$p2")"
+                ;;
+            esac
+          done < /tmp/changes.txt
