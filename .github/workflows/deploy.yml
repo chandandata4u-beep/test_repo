@@ -2,7 +2,6 @@ name: Test deploy to S3 using OIDC
 
 on:
   workflow_dispatch:
-
 jobs:
   deploy-dev:
     name: Deploy (DEV)
