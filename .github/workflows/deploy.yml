@@ -6,9 +6,9 @@ on:
 
 jobs:
 
-# =========================
+# ==========================
 # SECURITY SCAN (GITLEAKS)
-# =========================
+# ==========================
   gitleaks_scan:
     name: Security Scan (Gitleaks)
     runs-on: self-hosted
