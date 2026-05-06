@@ -11,13 +11,20 @@ jobs:
 # =========================
   gitleaks_scan:
     name: Security Scan (Gitleaks)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run Gitleaks (JSON report)
+      # 🔹 Verify runner is EC2
+      - name: Verify EC2 runner
+        run: |
+          echo "Running on:"
+          hostname
+
+      # 🔹 Run Gitleaks via Docker
+      - name: Run Gitleaks (Docker)
         run: |
           set +e
 
@@ -36,12 +43,14 @@ jobs:
           EXIT_CODE=$?
           echo "exit_code=$EXIT_CODE" > gitleaks-status.txt
 
+      # 🔹 Ensure report exists
       - name: Ensure report exists
         run: |
           if [ ! -s gitleaks-report.json ]; then
             echo "[]" > gitleaks-report.json
           fi
 
+      # 🔹 Convert JSON → CSV
       - name: Convert JSON -> CSV (masked secrets)
         run: |
           python3 - <<'PY'
@@ -86,6 +95,7 @@ jobs:
           print(f"CSV generated: {output_file} ({len(findings)} findings)")
           PY
 
+      # 🔹 Upload reports
       - name: Upload reports
         uses: actions/upload-artifact@v4
         if: always()
@@ -95,10 +105,12 @@ jobs:
             gitleaks-report.json
             secrets-findings.csv
 
+      # 🔹 Fail if secrets found
       - name: Fail pipeline if secrets found
         run: |
           if grep -q "\"RuleID\"" gitleaks-report.json; then
             echo "Secrets detected. Failing pipeline."
+            exit 1
           else
             echo "No secrets found."
           fi
@@ -109,7 +121,7 @@ jobs:
 # =========================
   deploy-dev:
     name: Deploy DEV to S3
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: gitleaks_scan
     if: github.ref_name == 'dev'
 
@@ -132,10 +144,8 @@ jobs:
         run: aws sts get-caller-identity
 
       - name: Deploy DEV to S3
-        shell: bash
         run: |
           set -euo pipefail
-
           BUCKET="s3://test-bucket-chandan"
 
           git diff --name-status -M \
@@ -143,26 +153,17 @@ jobs:
             ${{ github.event.after }} \
             > /tmp/changes.txt || true
 
-          upload_file() {
-            [ -f "$1" ] || return 0
-            aws s3 cp "$1" "$BUCKET/$2"
-          }
-
-          map_dest_key() {
-            echo "$1"
-          }
-
           while IFS=$'\t' read -r status p1 p2; do
             case "$status" in
               A|M)
-                upload_file "$p1" "$(map_dest_key "$p1")"
+                aws s3 cp "$p1" "$BUCKET/$p1"
                 ;;
               D)
-                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
+                aws s3 rm "$BUCKET/$p1" || true
                 ;;
               R*)
-                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
-                upload_file "$p2" "$(map_dest_key "$p2")"
+                aws s3 rm "$BUCKET/$p1" || true
+                aws s3 cp "$p2" "$BUCKET/$p2"
                 ;;
             esac
           done < /tmp/changes.txt
@@ -173,7 +174,7 @@ jobs:
 # =========================
   deploy-test:
     name: Deploy TEST to S3
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: gitleaks_scan
     if: github.ref_name == 'test'
 
@@ -196,10 +197,8 @@ jobs:
         run: aws sts get-caller-identity
 
       - name: Deploy TEST to S3
-        shell: bash
         run: |
           set -euo pipefail
-
           BUCKET="s3://test-bucket-chandan"
 
           git diff --name-status -M \
@@ -207,26 +206,17 @@ jobs:
             ${{ github.event.after }} \
             > /tmp/changes.txt || true
 
-          upload_file() {
-            [ -f "$1" ] || return 0
-            aws s3 cp "$1" "$BUCKET/$2"
-          }
-
-          map_dest_key() {
-            echo "$1"
-          }
-
           while IFS=$'\t' read -r status p1 p2; do
             case "$status" in
               A|M)
-                upload_file "$p1" "$(map_dest_key "$p1")"
+                aws s3 cp "$p1" "$BUCKET/$p1"
                 ;;
               D)
-                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
+                aws s3 rm "$BUCKET/$p1" || true
                 ;;
               R*)
-                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
-                upload_file "$p2" "$(map_dest_key "$p2")"
+                aws s3 rm "$BUCKET/$p1" || true
+                aws s3 cp "$p2" "$BUCKET/$p2"
                 ;;
             esac
           done < /tmp/changes.txt
@@ -237,7 +227,7 @@ jobs:
 # =========================
   deploy-prod:
     name: Deploy PROD to S3
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: gitleaks_scan
     if: github.ref_name == 'main'
 
@@ -260,10 +250,8 @@ jobs:
         run: aws sts get-caller-identity
 
       - name: Deploy PROD to S3
-        shell: bash
         run: |
           set -euo pipefail
-
           BUCKET="s3://test-bucket-chandan"
 
           git diff --name-status -M \
@@ -271,26 +259,17 @@ jobs:
             ${{ github.event.after }} \
             > /tmp/changes.txt || true
 
-          upload_file() {
-            [ -f "$1" ] || return 0
-            aws s3 cp "$1" "$BUCKET/$2"
-          }
-
-          map_dest_key() {
-            echo "$1"
-          }
-
           while IFS=$'\t' read -r status p1 p2; do
             case "$status" in
               A|M)
-                upload_file "$p1" "$(map_dest_key "$p1")"
+                aws s3 cp "$p1" "$BUCKET/$p1"
                 ;;
               D)
-                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
+                aws s3 rm "$BUCKET/$p1" || true
                 ;;
               R*)
-                aws s3 rm "$BUCKET/$(map_dest_key "$p1")" || true
-                upload_file "$p2" "$(map_dest_key "$p2")"
+                aws s3 rm "$BUCKET/$p1" || true
+                aws s3 cp "$p2" "$BUCKET/$p2"
                 ;;
             esac
           done < /tmp/changes.txt
