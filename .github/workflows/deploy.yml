@@ -1,4 +1,4 @@
-name: Secure Deploy to S3 (OIDC + Gitleaks Gate)
+name: Secure Deploy to S3 (EC2 Runner + Gitleaks)
 
 on:
   push:
@@ -17,13 +17,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 🔹 Verify runner is EC2
+      # Verify EC2 runner
       - name: Verify EC2 runner
         run: |
           echo "Running on:"
           hostname
 
-      # 🔹 Run Gitleaks via Docker
+      # Run Gitleaks using Docker
       - name: Run Gitleaks (Docker)
         run: |
           set +e
@@ -43,15 +43,15 @@ jobs:
           EXIT_CODE=$?
           echo "exit_code=$EXIT_CODE" > gitleaks-status.txt
 
-      # 🔹 Ensure report exists
+      # Ensure report exists
       - name: Ensure report exists
         run: |
           if [ ! -s gitleaks-report.json ]; then
             echo "[]" > gitleaks-report.json
           fi
 
-      # 🔹 Convert JSON → CSV
-      - name: Convert JSON -> CSV (masked secrets)
+      # Convert JSON to CSV
+      - name: Convert JSON -> CSV (masked)
         run: |
           python3 - <<'PY'
           import json, csv, os
@@ -95,7 +95,7 @@ jobs:
           print(f"CSV generated: {output_file} ({len(findings)} findings)")
           PY
 
-      # 🔹 Upload reports
+      # Upload artifacts
       - name: Upload reports
         uses: actions/upload-artifact@v4
         if: always()
@@ -105,7 +105,7 @@ jobs:
             gitleaks-report.json
             secrets-findings.csv
 
-      # 🔹 Fail if secrets found
+      # Fail pipeline if secrets found
       - name: Fail pipeline if secrets found
         run: |
           if grep -q "\"RuleID\"" gitleaks-report.json; then
@@ -124,22 +124,12 @@ jobs:
     needs: gitleaks_scan
     if: github.ref_name == 'dev'
 
-    permissions:
-      id-token: write
-      contents: read
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Verify AWS identity
+      - name: Verify AWS identity (EC2 IAM Role)
         run: aws sts get-caller-identity
 
       - name: Deploy DEV to S3
@@ -177,22 +167,12 @@ jobs:
     needs: gitleaks_scan
     if: github.ref_name == 'test'
 
-    permissions:
-      id-token: write
-      contents: read
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Verify AWS identity
+      - name: Verify AWS identity (EC2 IAM Role)
         run: aws sts get-caller-identity
 
       - name: Deploy TEST to S3
@@ -230,22 +210,12 @@ jobs:
     needs: gitleaks_scan
     if: github.ref_name == 'main'
 
-    permissions:
-      id-token: write
-      contents: read
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Verify AWS identity
+      - name: Verify AWS identity (EC2 IAM Role)
         run: aws sts get-caller-identity
 
       - name: Deploy PROD to S3
