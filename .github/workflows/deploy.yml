@@ -110,6 +110,7 @@ jobs:
         run: |
           if grep -q "\"RuleID\"" gitleaks-report.json; then
             echo "Secrets detected. Failing pipeline."
+            exit 1
           else
             echo "No secrets found."
           fi
@@ -143,18 +144,61 @@ jobs:
             > /tmp/changes.txt || true
 
           while IFS=$'\t' read -r status p1 p2; do
+
+            TARGET_PATH=$(python3 - <<PY
+          import json
+
+          mapping_file = ".cicd/s3-path-map.json"
+
+          source_path = "$p1"
+
+          with open(mapping_file) as f:
+              mapping = json.load(f)
+
+          exact = mapping.get("exact", {})
+
+          print(exact.get(source_path, source_path))
+          PY
+          )
+
             case "$status" in
+
               A|M)
-                aws s3 cp "$p1" "$BUCKET/$p1"
+                echo "Uploading $p1 -> $TARGET_PATH"
+                aws s3 cp "$p1" "$BUCKET/$TARGET_PATH"
                 ;;
+
               D)
-                aws s3 rm "$BUCKET/$p1" || true
+                echo "Deleting $TARGET_PATH"
+                aws s3 rm "$BUCKET/$TARGET_PATH" || true
                 ;;
+
               R*)
-                aws s3 rm "$BUCKET/$p1" || true
-                aws s3 cp "$p2" "$BUCKET/$p2"
+                TARGET_PATH_NEW=$(python3 - <<PY
+          import json
+
+          mapping_file = ".cicd/s3-path-map.json"
+
+          source_path = "$p2"
+
+          with open(mapping_file) as f:
+              mapping = json.load(f)
+
+          exact = mapping.get("exact", {})
+
+          print(exact.get(source_path, source_path))
+          PY
+          )
+
+                echo "Removing old file $TARGET_PATH"
+                aws s3 rm "$BUCKET/$TARGET_PATH" || true
+
+                echo "Uploading renamed file $p2 -> $TARGET_PATH_NEW"
+                aws s3 cp "$p2" "$BUCKET/$TARGET_PATH_NEW"
                 ;;
+
             esac
+
           done < /tmp/changes.txt
 
 
@@ -186,18 +230,61 @@ jobs:
             > /tmp/changes.txt || true
 
           while IFS=$'\t' read -r status p1 p2; do
+
+            TARGET_PATH=$(python3 - <<PY
+          import json
+
+          mapping_file = ".cicd/s3-path-map.json"
+
+          source_path = "$p1"
+
+          with open(mapping_file) as f:
+              mapping = json.load(f)
+
+          exact = mapping.get("exact", {})
+
+          print(exact.get(source_path, source_path))
+          PY
+          )
+
             case "$status" in
+
               A|M)
-                aws s3 cp "$p1" "$BUCKET/$p1"
+                echo "Uploading $p1 -> $TARGET_PATH"
+                aws s3 cp "$p1" "$BUCKET/$TARGET_PATH"
                 ;;
+
               D)
-                aws s3 rm "$BUCKET/$p1" || true
+                echo "Deleting $TARGET_PATH"
+                aws s3 rm "$BUCKET/$TARGET_PATH" || true
                 ;;
+
               R*)
-                aws s3 rm "$BUCKET/$p1" || true
-                aws s3 cp "$p2" "$BUCKET/$p2"
+                TARGET_PATH_NEW=$(python3 - <<PY
+          import json
+
+          mapping_file = ".cicd/s3-path-map.json"
+
+          source_path = "$p2"
+
+          with open(mapping_file) as f:
+              mapping = json.load(f)
+
+          exact = mapping.get("exact", {})
+
+          print(exact.get(source_path, source_path))
+          PY
+          )
+
+                echo "Removing old file $TARGET_PATH"
+                aws s3 rm "$BUCKET/$TARGET_PATH" || true
+
+                echo "Uploading renamed file $p2 -> $TARGET_PATH_NEW"
+                aws s3 cp "$p2" "$BUCKET/$TARGET_PATH_NEW"
                 ;;
+
             esac
+
           done < /tmp/changes.txt
 
 
@@ -229,16 +316,59 @@ jobs:
             > /tmp/changes.txt || true
 
           while IFS=$'\t' read -r status p1 p2; do
+
+            TARGET_PATH=$(python3 - <<PY
+          import json
+
+          mapping_file = ".cicd/s3-path-map.json"
+
+          source_path = "$p1"
+
+          with open(mapping_file) as f:
+              mapping = json.load(f)
+
+          exact = mapping.get("exact", {})
+
+          print(exact.get(source_path, source_path))
+          PY
+          )
+
             case "$status" in
+
               A|M)
-                aws s3 cp "$p1" "$BUCKET/$p1"
+                echo "Uploading $p1 -> $TARGET_PATH"
+                aws s3 cp "$p1" "$BUCKET/$TARGET_PATH"
                 ;;
+
               D)
-                aws s3 rm "$BUCKET/$p1" || true
+                echo "Deleting $TARGET_PATH"
+                aws s3 rm "$BUCKET/$TARGET_PATH" || true
                 ;;
+
               R*)
-                aws s3 rm "$BUCKET/$p1" || true
-                aws s3 cp "$p2" "$BUCKET/$p2"
+                TARGET_PATH_NEW=$(python3 - <<PY
+          import json
+
+          mapping_file = ".cicd/s3-path-map.json"
+
+          source_path = "$p2"
+
+          with open(mapping_file) as f:
+              mapping = json.load(f)
+
+          exact = mapping.get("exact", {})
+
+          print(exact.get(source_path, source_path))
+          PY
+          )
+
+                echo "Removing old file $TARGET_PATH"
+                aws s3 rm "$BUCKET/$TARGET_PATH" || true
+
+                echo "Uploading renamed file $p2 -> $TARGET_PATH_NEW"
+                aws s3 cp "$p2" "$BUCKET/$TARGET_PATH_NEW"
                 ;;
+
             esac
+
           done < /tmp/changes.txt
