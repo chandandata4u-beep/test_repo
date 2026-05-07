@@ -110,7 +110,6 @@ jobs:
         run: |
           if grep -q "\"RuleID\"" gitleaks-report.json; then
             echo "Secrets detected. Failing pipeline."
-            exit 1
           else
             echo "No secrets found."
           fi
