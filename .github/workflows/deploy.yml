@@ -300,7 +300,7 @@ jobs:
               elif [[ "$FILE" == airflow/* ]]; then
 
                 REL_PATH="${FILE#airflow/}"
-                DEST="s3://chandan-test-bucket/${REL_PATH}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
 
                 echo "Fallback DAGS Deploy => $DEST"
 
@@ -404,7 +404,7 @@ jobs:
               elif [[ "$FILE" == airflow/* ]]; then
 
                 REL_PATH="${FILE#airflow/}"
-                DEST="s3://chandan-test-bucket/${REL_PATH}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
 
                 echo "Fallback DAGS Deploy => $DEST"
 
@@ -508,7 +508,7 @@ jobs:
               elif [[ "$FILE" == airflow/* ]]; then
 
                 REL_PATH="${FILE#airflow/}"
-                DEST="s3://chandan-test-bucket/${REL_PATH}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
 
                 echo "Fallback DAGS Deploy => $DEST"
 
