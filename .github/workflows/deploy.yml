@@ -1,18 +1,17 @@
 name: Secure Deploy to S3
 
-
 on:
   push:
     branches: ["dev", "test", "main"]
 
 jobs:
 
-# ==========================
+# =========================
 # SECURITY SCAN (GITLEAKS)
 # =========================
   gitleaks_scan:
     name: Security Scan (Gitleaks)
-    runs-on: [self-hosted, oasis_di_dev]
+    runs-on: self-hosted
 
     steps:
       - name: Checkout
@@ -117,7 +116,7 @@ jobs:
 # =========================
   pylint_scan:
     name: Code Quality Scan (Pylint)
-    runs-on: [self-hosted, oasis_di_dev]
+    runs-on: self-hosted
     needs: gitleaks_scan
     continue-on-error: true
     if: ${{ !startsWith(github.ref_name, 'feature') }}
@@ -151,26 +150,15 @@ jobs:
 
       - name: Install pylint
         run: |
-          if command -v python3 &> /dev/null; then
-
-            echo "Ensuring pip is available..."
-
-            python3 -m ensurepip --upgrade || true
-            python3 -m pip install --upgrade pip || true
-            python3 -m pip install --no-cache-dir pylint
-
-          else
-            echo "Python3 not found!"
-            exit 1
-          fi
+          python3 -m ensurepip --upgrade || true
+          python3 -m pip install --upgrade pip || true
+          python3 -m pip install --no-cache-dir pylint
 
       - name: Running pylint scan on Python files
         run: |
-          echo "Running pylint scan on Python files..."
           FILES="$(git ls-files '*.py')"
 
           if [ -z "$FILES" ]; then
-            echo "No Python files found. Skipping pylint."
             echo "[]" > pylint-report.json
           else
             pylint $FILES --output-format=json > pylint-report.json || true
@@ -178,7 +166,6 @@ jobs:
 
       - name: Generate pylint-findings.csv
         run: |
-          echo "Generating pylint-findings.csv..."
           python3 - <<'PY'
           import json, csv, os
 
@@ -215,82 +202,13 @@ jobs:
           path: |
             pylint-report.json
             pylint-findings.csv
-name: Secure Deploy to S3
-
-
-# =========================
-# SECURITY SCAN (GITLEAKS)
-# =========================
-  gitleaks_scan:
-    name: Security Scan (Gitleaks)
-    runs-on: [self-hosted, oasis_di_dev]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Run Gitleaks (JSON report)
-        run: |
-          set +e
-
-          docker run --rm \
-            -v "$PWD:/repo" \
-            -w /repo \
-            zricethezav/gitleaks:latest \
-            detect \
-              --source . \
-              --no-git \
-              --config /repo/.gitleaks.toml \
-              --report-format json \
-              --report-path /repo/gitleaks-report.json \
-              --exit-code 0
-
-      - name: Ensure report exists
-        run: |
-          if [ ! -s gitleaks-report.json ]; then
-            echo "[]" > gitleaks-report.json
-          fi
-
-      - name: Upload reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: gitleaks-reports
-          path: |
-            gitleaks-report.json
-
-# =========================
-# PYLINT SCAN
-# =========================
-  pylint_scan:
-    name: Code Quality Scan (Pylint)
-    runs-on: [self-hosted, oasis_di_dev]
-    needs: gitleaks_scan
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install pylint
-        run: |
-          python3 -m pip install --upgrade pip || true
-          python3 -m pip install pylint
-
-      - name: Run pylint
-        run: |
-          FILES="$(git ls-files '*.py')"
-          if [ -z "$FILES" ]; then
-            echo "[]" > pylint-report.json
-          else
-            pylint $FILES --output-format=json > pylint-report.json || true
-          fi
 
 # =========================
 # DEV DEPLOY
 # =========================
   deploy-dev:
     name: Deploy DEV to S3
-    runs-on: [self-hosted, oasis_di_dev]
+    runs-on: self-hosted
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'dev'
 
@@ -365,7 +283,7 @@ name: Secure Deploy to S3
 # =========================
   deploy-test:
     name: Deploy TEST to S3
-    runs-on: [self-hosted, oasis_di_dev]
+    runs-on: self-hosted
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'test'
 
@@ -438,7 +356,7 @@ name: Secure Deploy to S3
 # =========================
   deploy-prod:
     name: Deploy PROD to S3
-    runs-on: [self-hosted, oasis_di_dev]
+    runs-on: self-hosted
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'main'
 
