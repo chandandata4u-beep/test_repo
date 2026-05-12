@@ -246,7 +246,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          MAPPING_FILE=".cicd/file-mapping.json"
+          MAPPING_FILE=".cicd/file-mapping.txt"
 
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
@@ -313,7 +313,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          MAPPING_FILE=".cicd/file-mapping.json"
+          MAPPING_FILE=".cicd/file-mapping.txt"
 
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
@@ -380,7 +380,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          MAPPING_FILE=".cicd/file-mapping.json"
+          MAPPING_FILE=".cicd/file-mapping.txt"
 
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
