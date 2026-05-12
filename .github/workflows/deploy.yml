@@ -6,12 +6,13 @@ on:
 
 jobs:
 
-# =========================
+
+# ==========================
 # SECURITY SCAN (GITLEAKS)
 # =========================
   gitleaks_scan:
     name: Security Scan (Gitleaks)
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
 
     steps:
       - name: Checkout
@@ -116,7 +117,7 @@ jobs:
 # =========================
   pylint_scan:
     name: Code Quality Scan (Pylint)
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
     needs: gitleaks_scan
     continue-on-error: true
     if: ${{ !startsWith(github.ref_name, 'feature') }}
@@ -139,7 +140,7 @@ jobs:
               sudo dnf install -y python3 python3-pip
             elif command -v apt-get &> /dev/null; then
               sudo apt-get update
-              sudo apt-get install -y python3 python3-pip
+              sudo apt-get install -y python3 python3-pip python3-venv
             else
               echo "No supported package manager found!"
               exit 1
@@ -148,24 +149,42 @@ jobs:
             python3 --version
           fi
 
-      - name: Install pylint
+      # =========================
+      # FIX: PEP 668 SAFE INSTALL
+      # =========================
+      - name: Install pylint (venv fix)
         run: |
-          python3 -m ensurepip --upgrade || true
-          python3 -m pip install --upgrade pip || true
-          python3 -m pip install --no-cache-dir pylint
+          python3 -m venv .venv
+          source .venv/bin/activate
 
+          pip install --upgrade pip
+          pip install --no-cache-dir pylint
+
+      # =========================
+      # RUN PYLINT
+      # =========================
       - name: Running pylint scan on Python files
         run: |
+          echo "Running pylint scan on Python files..."
+
+          source .venv/bin/activate
+
           FILES="$(git ls-files '*.py')"
 
           if [ -z "$FILES" ]; then
+            echo "No Python files found. Skipping pylint."
             echo "[]" > pylint-report.json
           else
             pylint $FILES --output-format=json > pylint-report.json || true
           fi
 
+      # =========================
+      # GENERATE CSV
+      # =========================
       - name: Generate pylint-findings.csv
         run: |
+          source .venv/bin/activate
+
           python3 - <<'PY'
           import json, csv, os
 
@@ -194,6 +213,9 @@ jobs:
           print("pylint-findings.csv created")
           PY
 
+      # =========================
+      # UPLOAD ARTIFACTS
+      # =========================
       - name: Upload pylint artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -204,11 +226,73 @@ jobs:
             pylint-findings.csv
 
 # =========================
+# SECURITY SCAN (GITLEAKS)
+# =========================
+  gitleaks_scan:
+    name: Security Scan (Gitleaks)
+    runs-on: [self-hosted, oasis_di_dev]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Gitleaks (JSON report)
+        run: |
+          set +e
+
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            zricethezav/gitleaks:latest \
+            detect \
+              --source . \
+              --no-git \
+              --config /repo/.gitleaks.toml \
+              --report-format json \
+              --report-path /repo/gitleaks-report.json \
+              --exit-code 0
+
+      - name: Ensure report exists
+        run: |
+          if [ ! -s gitleaks-report.json ]; then
+            echo "[]" > gitleaks-report.json
+          fi
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-reports
+          path: gitleaks-report.json
+
+# =========================
+# PYLINT (SELF-HOSTED SAFE)
+# =========================
+  pylint_scan:
+    name: Code Quality Scan (Pylint)
+    runs-on: [self-hosted, oasis_di_dev]
+    needs: gitleaks_scan
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run pylint
+        run: |
+          FILES="$(git ls-files '*.py')"
+
+          if [ -z "$FILES" ]; then
+            echo "[]" > pylint-report.json
+          else
+            pylint $FILES --output-format=json > pylint-report.json || true
+          fi
+
+# =========================
 # DEV DEPLOY
 # =========================
   deploy-dev:
     name: Deploy DEV to S3
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'dev'
 
@@ -217,21 +301,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Deploy DEV (Mapping + Fallback)
+      - name: Deploy DEV
         shell: bash
         run: |
           set -euo pipefail
 
-          BUCKET="${{ secrets.S3_BUCKET_DEV }}"
-          MAPPING_FILE="file-mapping.txt"
+          MAPPING_FILE="file-mapping.json"
 
-          git diff --name-status -M \
-            ${{ github.event.before }} \
-            ${{ github.sha }} \
-            > /tmp/changes.txt || true
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            git ls-files > /tmp/changes.txt
+            sed -i 's/^/A\t/' /tmp/changes.txt
+          else
+            git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
+          fi
 
           while IFS=$'\t' read -r status p1 p2; do
-
             case "$status" in
               A|M) FILE="$p1" ;;
               D) FILE="$p1" ;;
@@ -239,41 +326,30 @@ jobs:
               *) continue ;;
             esac
 
-            [ -z "$FILE" ] && continue
             MATCH_FOUND=false
 
             while IFS='=' read -r SRC TARGET; do
               SRC=$(echo "$SRC" | xargs)
               TARGET=$(echo "$TARGET" | xargs)
+
               [[ -z "$SRC" || -z "$TARGET" ]] && continue
 
               if [[ "$FILE" == $SRC/* ]]; then
                 MATCH_FOUND=true
                 REL="${FILE#$SRC/}"
-                TARGET_FILE="$TARGET/$REL"
+                DEST="$TARGET$REL"
 
                 if [[ "$status" == "D" ]]; then
-                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                  aws s3 rm "$DEST" || true
                 else
-                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                  aws s3 cp "$FILE" "$DEST"
                 fi
                 break
               fi
-
             done < "$MAPPING_FILE"
 
             if [ "$MATCH_FOUND" = false ]; then
-              if [[ "$FILE" == src/* ]]; then
-                TARGET_FILE="${FILE#src/}"
-
-                if [[ "$status" == "D" ]]; then
-                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
-                else
-                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
-                fi
-              else
-                echo "WARNING: No mapping for $FILE"
-              fi
+              echo "WARNING (DEV): No mapping for $FILE"
             fi
 
           done < /tmp/changes.txt
@@ -283,7 +359,7 @@ jobs:
 # =========================
   deploy-test:
     name: Deploy TEST to S3
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'test'
 
@@ -292,18 +368,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Deploy TEST (Mapping + Fallback)
+      - name: Deploy TEST
         shell: bash
         run: |
           set -euo pipefail
 
-          BUCKET="${{ secrets.S3_BUCKET_TEST }}"
-          MAPPING_FILE="file-mapping.txt"
+          MAPPING_FILE="file-mapping.json"
 
-          git diff --name-status -M \
-            ${{ github.event.before }} \
-            ${{ github.sha }} \
-            > /tmp/changes.txt || true
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            git ls-files > /tmp/changes.txt
+            sed -i 's/^/A\t/' /tmp/changes.txt
+          else
+            git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
+          fi
 
           while IFS=$'\t' read -r status p1 p2; do
             case "$status" in
@@ -313,40 +393,30 @@ jobs:
               *) continue ;;
             esac
 
-            [ -z "$FILE" ] && continue
             MATCH_FOUND=false
 
             while IFS='=' read -r SRC TARGET; do
               SRC=$(echo "$SRC" | xargs)
               TARGET=$(echo "$TARGET" | xargs)
+
               [[ -z "$SRC" || -z "$TARGET" ]] && continue
 
               if [[ "$FILE" == $SRC/* ]]; then
                 MATCH_FOUND=true
                 REL="${FILE#$SRC/}"
-                TARGET_FILE="$TARGET/$REL"
+                DEST="$TARGET$REL"
 
                 if [[ "$status" == "D" ]]; then
-                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                  aws s3 rm "$DEST" || true
                 else
-                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                  aws s3 cp "$FILE" "$DEST"
                 fi
                 break
               fi
             done < "$MAPPING_FILE"
 
             if [ "$MATCH_FOUND" = false ]; then
-              if [[ "$FILE" == src/* ]]; then
-                TARGET_FILE="${FILE#src/}"
-
-                if [[ "$status" == "D" ]]; then
-                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
-                else
-                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
-                fi
-              else
-                echo "WARNING: No mapping for $FILE"
-              fi
+              echo "WARNING (TEST): No mapping for $FILE"
             fi
 
           done < /tmp/changes.txt
@@ -356,7 +426,7 @@ jobs:
 # =========================
   deploy-prod:
     name: Deploy PROD to S3
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'main'
 
@@ -365,18 +435,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Deploy PROD (Mapping + Fallback)
+      - name: Deploy PROD
         shell: bash
         run: |
           set -euo pipefail
 
-          BUCKET="${{ secrets.S3_BUCKET_PROD }}"
-          MAPPING_FILE="file-mapping.txt"
+          MAPPING_FILE="file-mapping.json"
 
-          git diff --name-status -M \
-            ${{ github.event.before }} \
-            ${{ github.sha }} \
-            > /tmp/changes.txt || true
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            git ls-files > /tmp/changes.txt
+            sed -i 's/^/A\t/' /tmp/changes.txt
+          else
+            git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
+          fi
 
           while IFS=$'\t' read -r status p1 p2; do
             case "$status" in
@@ -386,40 +460,30 @@ jobs:
               *) continue ;;
             esac
 
-            [ -z "$FILE" ] && continue
             MATCH_FOUND=false
 
             while IFS='=' read -r SRC TARGET; do
               SRC=$(echo "$SRC" | xargs)
               TARGET=$(echo "$TARGET" | xargs)
+
               [[ -z "$SRC" || -z "$TARGET" ]] && continue
 
               if [[ "$FILE" == $SRC/* ]]; then
                 MATCH_FOUND=true
                 REL="${FILE#$SRC/}"
-                TARGET_FILE="$TARGET/$REL"
+                DEST="$TARGET$REL"
 
                 if [[ "$status" == "D" ]]; then
-                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                  aws s3 rm "$DEST" || true
                 else
-                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                  aws s3 cp "$FILE" "$DEST"
                 fi
                 break
               fi
             done < "$MAPPING_FILE"
 
             if [ "$MATCH_FOUND" = false ]; then
-              if [[ "$FILE" == src/* ]]; then
-                TARGET_FILE="${FILE#src/}"
-
-                if [[ "$status" == "D" ]]; then
-                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
-                else
-                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
-                fi
-              else
-                echo "WARNING: No mapping for $FILE"
-              fi
+              echo "WARNING (PROD): No mapping for $FILE"
             fi
 
           done < /tmp/changes.txt
