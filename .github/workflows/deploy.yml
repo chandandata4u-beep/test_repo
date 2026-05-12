@@ -1,4 +1,3 @@
-
 name: Secure Deploy to S3
 
 on:
@@ -113,6 +112,7 @@ jobs:
             echo "No secrets found."
           fi
 
+
 # =========================
 # CODE QUALITY (PYLINT)
 # =========================
@@ -150,9 +150,6 @@ jobs:
             python3 --version
           fi
 
-      # =========================
-      # FIX: PEP 668 SAFE INSTALL
-      # =========================
       - name: Install pylint (venv fix)
         run: |
           python3 -m venv .venv
@@ -161,9 +158,6 @@ jobs:
           pip install --upgrade pip
           pip install --no-cache-dir pylint
 
-      # =========================
-      # RUN PYLINT
-      # =========================
       - name: Running pylint scan on Python files
         run: |
           echo "Running pylint scan on Python files..."
@@ -179,9 +173,6 @@ jobs:
             pylint $FILES --output-format=json > pylint-report.json || true
           fi
 
-      # =========================
-      # GENERATE CSV
-      # =========================
       - name: Generate pylint-findings.csv
         run: |
           source .venv/bin/activate
@@ -214,9 +205,6 @@ jobs:
           print("pylint-findings.csv created")
           PY
 
-      # =========================
-      # UPLOAD ARTIFACTS
-      # =========================
       - name: Upload pylint artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -289,10 +277,22 @@ jobs:
             done < "$MAPPING_FILE"
 
             if [ "$MATCH_FOUND" = false ]; then
-              echo "WARNING (DEV): No mapping for $FILE"
+              echo "WARNING (DEV): No mapping for $FILE - using fallback"
+
+              if [[ "$FILE" == src/* ]]; then
+                REL_PATH="${FILE#src/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+              fi
             fi
 
           done < /tmp/changes.txt
+
 
 # =========================
 # TEST DEPLOY
@@ -356,10 +356,22 @@ jobs:
             done < "$MAPPING_FILE"
 
             if [ "$MATCH_FOUND" = false ]; then
-              echo "WARNING (TEST): No mapping for $FILE"
+              echo "WARNING (TEST): No mapping for $FILE - using fallback"
+
+              if [[ "$FILE" == src/* ]]; then
+                REL_PATH="${FILE#src/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+              fi
             fi
 
           done < /tmp/changes.txt
+
 
 # =========================
 # PROD DEPLOY
@@ -425,12 +437,16 @@ jobs:
             if [ "$MATCH_FOUND" = false ]; then
               echo "WARNING (PROD): No mapping for $FILE - using default fallback"
 
-              REL_PATH="${FILE#src/}"
-              DEST="s3://test-bucket-chandan/${REL_PATH}"
-            
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
+              if [[ "$FILE" == src/* ]]; then
+                REL_PATH="${FILE#src/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
               fi
             fi
+
+          done < /tmp/changes.txt
