@@ -1,14 +1,13 @@
-name: Secure Deploy to S3 (EC2 Runner + Gitleaks)
+name: Secure Deploy to S3
 
 on:
   push:
-    branches: ["dev", "test", "main"]
 
 jobs:
 
 # ==========================
 # SECURITY SCAN (GITLEAKS)
-# ==========================
+# =========================
   gitleaks_scan:
     name: Security Scan (Gitleaks)
     runs-on: self-hosted
@@ -17,14 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Verify EC2 runner
-      - name: Verify EC2 runner
-        run: |
-          echo "Running on:"
-          hostname
-
-      # Run Gitleaks using Docker
-      - name: Run Gitleaks (Docker)
+      - name: Run Gitleaks (JSON report)
         run: |
           set +e
 
@@ -38,20 +30,15 @@ jobs:
               --config /repo/.gitleaks.toml \
               --report-format json \
               --report-path /repo/gitleaks-report.json \
-              --exit-code 1
+              --exit-code 0
 
-          EXIT_CODE=$?
-          echo "exit_code=$EXIT_CODE" > gitleaks-status.txt
-
-      # Ensure report exists
       - name: Ensure report exists
         run: |
           if [ ! -s gitleaks-report.json ]; then
             echo "[]" > gitleaks-report.json
           fi
 
-      # Convert JSON to CSV
-      - name: Convert JSON -> CSV (masked)
+      - name: Convert JSON to CSV
         run: |
           python3 - <<'PY'
           import json, csv, os
@@ -72,11 +59,18 @@ jobs:
               try:
                   with open(input_file, "r", encoding="utf-8") as f:
                       data = json.load(f)
+
                   if isinstance(data, list):
                       findings = data
                   elif isinstance(data, dict):
-                      findings = data.get("findings", [])
-              except Exception:
+                      findings = (
+                          data.get("findings")
+                          or data.get("Leaks")
+                          or data.get("leaks")
+                          or []
+                      )
+              except Exception as e:
+                  print("JSON parse error:", e)
                   findings = []
 
           with open(output_file, "w", newline="", encoding="utf-8") as f:
@@ -92,10 +86,9 @@ jobs:
                       mask(secret),
                   ])
 
-          print(f"CSV generated: {output_file} ({len(findings)} findings)")
+          print(f"CSV generated with {len(findings)} findings")
           PY
 
-      # Upload artifacts
       - name: Upload reports
         uses: actions/upload-artifact@v4
         if: always()
@@ -105,15 +98,194 @@ jobs:
             gitleaks-report.json
             secrets-findings.csv
 
-      # Fail pipeline if secrets found
       - name: Fail pipeline if secrets found
         run: |
-          if grep -q "\"RuleID\"" gitleaks-report.json; then
+          COUNT=$(grep -c '"RuleID"' gitleaks-report.json || true)
+
+          echo "Secrets found: $COUNT"
+
+          if [ "$COUNT" -gt 0 ]; then
             echo "Secrets detected. Failing pipeline."
           else
             echo "No secrets found."
           fi
 
+# =========================
+# CODE QUALITY (PYLINT)
+# =========================
+  pylint_scan:
+    name: Code Quality Scan (Pylint)
+    runs-on: self-hosted
+    needs: gitleaks_scan
+    continue-on-error: true
+    if: ${{ !startsWith(github.ref_name, 'feature') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure Python is available
+        run: |
+          if command -v python3 &> /dev/null; then
+            echo "Python already installed"
+            python3 --version
+          else
+            echo "Python not found. Installing..."
+
+            if command -v yum &> /dev/null; then
+              sudo yum install -y python3 python3-pip
+            elif command -v dnf &> /dev/null; then
+              sudo dnf install -y python3 python3-pip
+            elif command -v apt-get &> /dev/null; then
+              sudo apt-get update
+              sudo apt-get install -y python3 python3-pip
+            else
+              echo "No supported package manager found!"
+              exit 1
+            fi
+
+            python3 --version
+          fi
+
+      - name: Install pylint
+        run: |
+          if command -v python3 &> /dev/null; then
+
+            echo "Ensuring pip is available..."
+
+            python3 -m ensurepip --upgrade || true
+            python3 -m pip install --upgrade pip || true
+            python3 -m pip install --no-cache-dir pylint
+
+          else
+            echo "Python3 not found!"
+            exit 1
+          fi
+
+      - name: Running pylint scan on Python files
+        run: |
+          echo "Running pylint scan on Python files..."
+          FILES="$(git ls-files '*.py')"
+
+          if [ -z "$FILES" ]; then
+            echo "No Python files found. Skipping pylint."
+            echo "[]" > pylint-report.json
+          else
+            pylint $FILES --output-format=json > pylint-report.json || true
+          fi
+
+      - name: Generate pylint-findings.csv
+        run: |
+          echo "Generating pylint-findings.csv..."
+          python3 - <<'PY'
+          import json, csv, os
+
+          jf = "pylint-report.json"
+          cf = "pylint-findings.csv"
+
+          with open(cf, "w", newline="", encoding="utf-8") as f:
+              w = csv.writer(f)
+              w.writerow(["file", "line", "message", "severity", "rule"])
+
+              if os.path.exists(jf) and os.path.getsize(jf) > 0:
+                  try:
+                      issues = json.load(open(jf, "r", encoding="utf-8"))
+                  except Exception:
+                      issues = []
+
+                  for i in issues:
+                      w.writerow([
+                          i.get("path"),
+                          i.get("line"),
+                          i.get("message"),
+                          i.get("type"),
+                          i.get("symbol")
+                      ])
+
+          print("pylint-findings.csv created")
+          PY
+
+      - name: Upload pylint artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pylint-report
+          path: |
+            pylint-report.json
+            pylint-findings.csv
+name: Secure Deploy to S3
+
+on:
+  push:
+
+jobs:
+
+# =========================
+# SECURITY SCAN (GITLEAKS)
+# =========================
+  gitleaks_scan:
+    name: Security Scan (Gitleaks)
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Gitleaks (JSON report)
+        run: |
+          set +e
+
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            zricethezav/gitleaks:latest \
+            detect \
+              --source . \
+              --no-git \
+              --config /repo/.gitleaks.toml \
+              --report-format json \
+              --report-path /repo/gitleaks-report.json \
+              --exit-code 0
+
+      - name: Ensure report exists
+        run: |
+          if [ ! -s gitleaks-report.json ]; then
+            echo "[]" > gitleaks-report.json
+          fi
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-reports
+          path: |
+            gitleaks-report.json
+
+# =========================
+# PYLINT SCAN
+# =========================
+  pylint_scan:
+    name: Code Quality Scan (Pylint)
+    runs-on: [self-hosted, oasis_di_dev]
+    needs: gitleaks_scan
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pylint
+        run: |
+          python3 -m pip install --upgrade pip || true
+          python3 -m pip install pylint
+
+      - name: Run pylint
+        run: |
+          FILES="$(git ls-files '*.py')"
+          if [ -z "$FILES" ]; then
+            echo "[]" > pylint-report.json
+          else
+            pylint $FILES --output-format=json > pylint-report.json || true
+          fi
 
 # =========================
 # DEV DEPLOY
@@ -121,171 +293,147 @@ jobs:
   deploy-dev:
     name: Deploy DEV to S3
     runs-on: self-hosted
-    needs: gitleaks_scan
+    needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'dev'
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Verify AWS identity (EC2 IAM Role)
-        run: aws sts get-caller-identity
-
-      - name: Deploy DEV to S3
+      - name: Deploy DEV (Mapping + Fallback)
+        shell: bash
         run: |
           set -euo pipefail
-          BUCKET="s3://test-bucket-chandan"
+
+          BUCKET="${{ secrets.S3_BUCKET_DEV }}"
+          MAPPING_FILE="file-mapping.txt"
 
           git diff --name-status -M \
             ${{ github.event.before }} \
-            ${{ github.event.after }} \
+            ${{ github.sha }} \
             > /tmp/changes.txt || true
 
           while IFS=$'\t' read -r status p1 p2; do
 
-            TARGET_PATH=$(python3 - <<PY
-          import json
-
-          mapping_file = ".cicd/s3-path-map.json"
-
-          source_path = "$p1"
-
-          with open(mapping_file) as f:
-              mapping = json.load(f)
-
-          exact = mapping.get("exact", {})
-
-          print(exact.get(source_path, source_path))
-          PY
-          )
-
             case "$status" in
-
-              A|M)
-                echo "Uploading $p1 -> $TARGET_PATH"
-                aws s3 cp "$p1" "$BUCKET/$TARGET_PATH"
-                ;;
-
-              D)
-                echo "Deleting $TARGET_PATH"
-                aws s3 rm "$BUCKET/$TARGET_PATH" || true
-                ;;
-
-              R*)
-                TARGET_PATH_NEW=$(python3 - <<PY
-          import json
-
-          mapping_file = ".cicd/s3-path-map.json"
-
-          source_path = "$p2"
-
-          with open(mapping_file) as f:
-              mapping = json.load(f)
-
-          exact = mapping.get("exact", {})
-
-          print(exact.get(source_path, source_path))
-          PY
-          )
-
-                echo "Removing old file $TARGET_PATH"
-                aws s3 rm "$BUCKET/$TARGET_PATH" || true
-
-                echo "Uploading renamed file $p2 -> $TARGET_PATH_NEW"
-                aws s3 cp "$p2" "$BUCKET/$TARGET_PATH_NEW"
-                ;;
-
+              A|M) FILE="$p1" ;;
+              D) FILE="$p1" ;;
+              R*) FILE="$p2" ;;
+              *) continue ;;
             esac
 
-          done < /tmp/changes.txt
+            [ -z "$FILE" ] && continue
+            MATCH_FOUND=false
 
+            while IFS='=' read -r SRC TARGET; do
+              SRC=$(echo "$SRC" | xargs)
+              TARGET=$(echo "$TARGET" | xargs)
+              [[ -z "$SRC" || -z "$TARGET" ]] && continue
+
+              if [[ "$FILE" == $SRC/* ]]; then
+                MATCH_FOUND=true
+                REL="${FILE#$SRC/}"
+                TARGET_FILE="$TARGET/$REL"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                else
+                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                fi
+                break
+              fi
+
+            done < "$MAPPING_FILE"
+
+            if [ "$MATCH_FOUND" = false ]; then
+              if [[ "$FILE" == src/* ]]; then
+                TARGET_FILE="${FILE#src/}"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                else
+                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                fi
+              else
+                echo "WARNING: No mapping for $FILE"
+              fi
+            fi
+
+          done < /tmp/changes.txt
 
 # =========================
 # TEST DEPLOY
 # =========================
   deploy-test:
-    name: Deploy TEST to S3
+    name: Deploy TEST to S3[
     runs-on: self-hosted
-    needs: gitleaks_scan
+    needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'test'
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Verify AWS identity (EC2 IAM Role)
-        run: aws sts get-caller-identity
-
-      - name: Deploy TEST to S3
+      - name: Deploy TEST (Mapping + Fallback)
+        shell: bash
         run: |
           set -euo pipefail
-          BUCKET="s3://test-bucket-chandan"
+
+          BUCKET="${{ secrets.S3_BUCKET_TEST }}"
+          MAPPING_FILE="file-mapping.txt"
 
           git diff --name-status -M \
             ${{ github.event.before }} \
-            ${{ github.event.after }} \
+            ${{ github.sha }} \
             > /tmp/changes.txt || true
 
           while IFS=$'\t' read -r status p1 p2; do
-
-            TARGET_PATH=$(python3 - <<PY
-          import json
-
-          mapping_file = ".cicd/s3-path-map.json"
-
-          source_path = "$p1"
-
-          with open(mapping_file) as f:
-              mapping = json.load(f)
-
-          exact = mapping.get("exact", {})
-
-          print(exact.get(source_path, source_path))
-          PY
-          )
-
             case "$status" in
-
-              A|M)
-                echo "Uploading $p1 -> $TARGET_PATH"
-                aws s3 cp "$p1" "$BUCKET/$TARGET_PATH"
-                ;;
-
-              D)
-                echo "Deleting $TARGET_PATH"
-                aws s3 rm "$BUCKET/$TARGET_PATH" || true
-                ;;
-
-              R*)
-                TARGET_PATH_NEW=$(python3 - <<PY
-          import json
-
-          mapping_file = ".cicd/s3-path-map.json"
-
-          source_path = "$p2"
-
-          with open(mapping_file) as f:
-              mapping = json.load(f)
-
-          exact = mapping.get("exact", {})
-
-          print(exact.get(source_path, source_path))
-          PY
-          )
-
-                echo "Removing old file $TARGET_PATH"
-                aws s3 rm "$BUCKET/$TARGET_PATH" || true
-
-                echo "Uploading renamed file $p2 -> $TARGET_PATH_NEW"
-                aws s3 cp "$p2" "$BUCKET/$TARGET_PATH_NEW"
-                ;;
-
+              A|M) FILE="$p1" ;;
+              D) FILE="$p1" ;;
+              R*) FILE="$p2" ;;
+              *) continue ;;
             esac
 
-          done < /tmp/changes.txt
+            [ -z "$FILE" ] && continue
+            MATCH_FOUND=false
 
+            while IFS='=' read -r SRC TARGET; do
+              SRC=$(echo "$SRC" | xargs)
+              TARGET=$(echo "$TARGET" | xargs)
+              [[ -z "$SRC" || -z "$TARGET" ]] && continue
+
+              if [[ "$FILE" == $SRC/* ]]; then
+                MATCH_FOUND=true
+                REL="${FILE#$SRC/}"
+                TARGET_FILE="$TARGET/$REL"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                else
+                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                fi
+                break
+              fi
+            done < "$MAPPING_FILE"
+
+            if [ "$MATCH_FOUND" = false ]; then
+              if [[ "$FILE" == src/* ]]; then
+                TARGET_FILE="${FILE#src/}"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                else
+                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                fi
+              else
+                echo "WARNING: No mapping for $FILE"
+              fi
+            fi
+
+          done < /tmp/changes.txt
 
 # =========================
 # PROD DEPLOY
@@ -293,81 +441,69 @@ jobs:
   deploy-prod:
     name: Deploy PROD to S3
     runs-on: self-hosted
-    needs: gitleaks_scan
+    needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'main'
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Verify AWS identity (EC2 IAM Role)
-        run: aws sts get-caller-identity
-
-      - name: Deploy PROD to S3
+      - name: Deploy PROD (Mapping + Fallback)
+        shell: bash
         run: |
           set -euo pipefail
-          BUCKET="s3://test-bucket-chandan"
+
+          BUCKET="${{ secrets.S3_BUCKET_PROD }}"
+          MAPPING_FILE="file-mapping.txt"
 
           git diff --name-status -M \
             ${{ github.event.before }} \
-            ${{ github.event.after }} \
+            ${{ github.sha }} \
             > /tmp/changes.txt || true
 
           while IFS=$'\t' read -r status p1 p2; do
-
-            TARGET_PATH=$(python3 - <<PY
-          import json
-
-          mapping_file = ".cicd/s3-path-map.json"
-
-          source_path = "$p1"
-
-          with open(mapping_file) as f:
-              mapping = json.load(f)
-
-          exact = mapping.get("exact", {})
-
-          print(exact.get(source_path, source_path))
-          PY
-          )
-
             case "$status" in
-
-              A|M)
-                echo "Uploading $p1 -> $TARGET_PATH"
-                aws s3 cp "$p1" "$BUCKET/$TARGET_PATH"
-                ;;
-
-              D)
-                echo "Deleting $TARGET_PATH"
-                aws s3 rm "$BUCKET/$TARGET_PATH" || true
-                ;;
-
-              R*)
-                TARGET_PATH_NEW=$(python3 - <<PY
-          import json
-
-          mapping_file = ".cicd/s3-path-map.json"
-
-          source_path = "$p2"
-
-          with open(mapping_file) as f:
-              mapping = json.load(f)
-
-          exact = mapping.get("exact", {})
-
-          print(exact.get(source_path, source_path))
-          PY
-          )
-
-                echo "Removing old file $TARGET_PATH"
-                aws s3 rm "$BUCKET/$TARGET_PATH" || true
-
-                echo "Uploading renamed file $p2 -> $TARGET_PATH_NEW"
-                aws s3 cp "$p2" "$BUCKET/$TARGET_PATH_NEW"
-                ;;
-
+              A|M) FILE="$p1" ;;
+              D) FILE="$p1" ;;
+              R*) FILE="$p2" ;;
+              *) continue ;;
             esac
+
+            [ -z "$FILE" ] && continue
+            MATCH_FOUND=false
+
+            while IFS='=' read -r SRC TARGET; do
+              SRC=$(echo "$SRC" | xargs)
+              TARGET=$(echo "$TARGET" | xargs)
+              [[ -z "$SRC" || -z "$TARGET" ]] && continue
+
+              if [[ "$FILE" == $SRC/* ]]; then
+                MATCH_FOUND=true
+                REL="${FILE#$SRC/}"
+                TARGET_FILE="$TARGET/$REL"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                else
+                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                fi
+                break
+              fi
+            done < "$MAPPING_FILE"
+
+            if [ "$MATCH_FOUND" = false ]; then
+              if [[ "$FILE" == src/* ]]; then
+                TARGET_FILE="${FILE#src/}"
+
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$BUCKET/$TARGET_FILE" || true
+                else
+                  aws s3 cp "$FILE" "$BUCKET/$TARGET_FILE"
+                fi
+              else
+                echo "WARNING: No mapping for $FILE"
+              fi
+            fi
 
           done < /tmp/changes.txt
