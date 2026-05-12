@@ -1,7 +1,9 @@
 name: Secure Deploy to S3
 
+
 on:
   push:
+    branches: ["dev", "test", "main"]
 
 jobs:
 
@@ -10,7 +12,7 @@ jobs:
 # =========================
   gitleaks_scan:
     name: Security Scan (Gitleaks)
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
 
     steps:
       - name: Checkout
@@ -115,7 +117,7 @@ jobs:
 # =========================
   pylint_scan:
     name: Code Quality Scan (Pylint)
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
     needs: gitleaks_scan
     continue-on-error: true
     if: ${{ !startsWith(github.ref_name, 'feature') }}
@@ -215,17 +217,13 @@ jobs:
             pylint-findings.csv
 name: Secure Deploy to S3
 
-on:
-  push:
-
-jobs:
 
 # =========================
 # SECURITY SCAN (GITLEAKS)
 # =========================
   gitleaks_scan:
     name: Security Scan (Gitleaks)
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
 
     steps:
       - name: Checkout
@@ -292,7 +290,7 @@ jobs:
 # =========================
   deploy-dev:
     name: Deploy DEV to S3
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'dev'
 
@@ -366,8 +364,8 @@ jobs:
 # TEST DEPLOY
 # =========================
   deploy-test:
-    name: Deploy TEST to S3[
-    runs-on: self-hosted
+    name: Deploy TEST to S3
+    runs-on: [self-hosted, oasis_di_dev]
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'test'
 
@@ -440,7 +438,7 @@ jobs:
 # =========================
   deploy-prod:
     name: Deploy PROD to S3
-    runs-on: self-hosted
+    runs-on: [self-hosted, oasis_di_dev]
     needs: [gitleaks_scan, pylint_scan]
     if: github.ref_name == 'main'
 
