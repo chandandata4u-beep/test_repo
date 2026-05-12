@@ -1,0 +1,15 @@
+{
+  "src/bootstrap-scripts": "s3://test-bucket-chandan/bootstrap-scripts/",
+
+  "src/bitbucket/onekey/common": "s3://test-bucket-chandan/bitbucket/onekey/common/",
+  "src/bitbucket/onekey/config": "s3://test-bucket-chandan/bitbucket/onekey/config/",
+  "src/bitbucket/onekey/landing": "s3://test-bucket-chandan/bitbucket/onekey/landing/",
+  "src/bitbucket/onekey/normalized": "s3://test-bucket-chandan/bitbucket/onekey/normalized/",
+  "src/bitbucket/onekey/reltio_ingestion": "s3://test-bucket-chandan/bitbucket/onekey/reltio_ingestion/",
+  "src/bitbucket/onekey/standardized": "s3://test-bucket-chandan/bitbucket/onekey/standardized/",
+
+  "src/bitbucket/onekey/jars/jar_configs": "s3://test-bucket-chandan/bitbucket/onekey/jars/jar_configs/",
+
+  "airflow/dags/MDM/commercial_mdm_inbound/onekey": "s3://test-bucket-chandan/dags/MDM/commercial_mdm_inbound/onekey/",
+  "airflow/dags/MDM/commercial_mdm_inbound/onekey/common_utilities": "s3://test-bucket-chandan/dags/MDM/commercial_mdm_inbound/onekey/common_utilities/"
+}
