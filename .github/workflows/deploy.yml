@@ -423,7 +423,14 @@ jobs:
             done < "$MAPPING_FILE"
 
             if [ "$MATCH_FOUND" = false ]; then
-              echo "WARNING (PROD): No mapping for $FILE"
-            fi
+              echo "WARNING (PROD): No mapping for $FILE - using default fallback"
 
-          done < /tmp/changes.txt
+              REL_PATH="${FILE#src/}"
+              DEST="s3://test-bucket-chandan/${REL_PATH}"
+            
+              if [[ "$status" == "D" ]]; then
+                aws s3 rm "$DEST" || true
+              else
+                aws s3 cp "$FILE" "$DEST"
+              fi
+            fi
