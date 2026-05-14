@@ -217,316 +217,316 @@ jobs:
 # =========================
 # DEV DEPLOY
 # =========================
-deploy-dev:
-  name: Deploy DEV to S3
-  runs-on: self-hosted
-  needs: [gitleaks_scan, pylint_scan]
-  if: github.ref_name == 'dev'
-
-  steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Deploy DEV
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        MAPPING_FILE=".cicd/file-mapping.json"
-
-        BEFORE="${{ github.event.before }}"
-        AFTER="${{ github.sha }}"
-
-        if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-          git ls-files > /tmp/changes.txt
-          sed -i 's/^/A\t/' /tmp/changes.txt
-        else
-          git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
-        fi
-
-        while IFS=$'\t' read -r status p1 p2; do
-          case "$status" in
-            A|M) FILE="$p1" ;;
-            D) FILE="$p1" ;;
-            R*) FILE="$p2" ;;
-            *) continue ;;
-          esac
-
-          MATCH_FOUND=false
-
-          while read -r entry; do
-
-            SRC=$(echo "$entry" | jq -r 'keys[0]')
-            TARGET=$(echo "$entry" | jq -r '.[keys[0]]')
-
-            [[ -z "$SRC" || -z "$TARGET" ]] && continue
-
-            if [[ "$FILE" == $SRC/* ]]; then
-              MATCH_FOUND=true
-              REL="${FILE#$SRC/}"
-              DEST="$TARGET$REL"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
-              fi
-              break
-            fi
-
-          done < <(jq -c 'to_entries[] | {(.key): .value}' "$MAPPING_FILE")
-
-          if [ "$MATCH_FOUND" = false ]; then
-            echo "WARNING (DEV): No mapping for $FILE - using fallback"
-
-            # ==========================================
-            # FALLBACK FOR src/*
-            # ==========================================
-            if [[ "$FILE" == src/* ]]; then
-
-              REL_PATH="${FILE#src/}"
-              DEST="s3://test-bucket-chandan/${REL_PATH}"
-
-              echo "Fallback SRC Deploy => $DEST"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
-              fi
-
-            # ==========================================
-            # FALLBACK FOR airflow/*
-            # ==========================================
-            elif [[ "$FILE" == airflow/* ]]; then
-
-              REL_PATH="${FILE#airflow/}"
-              DEST="s3://test-bucket-chandan/${REL_PATH}"
-
-              echo "Fallback DAGS Deploy => $DEST"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
-              fi
-
-            else
-              echo "SKIPPING unsupported file: $FILE"
-            fi
+  deploy-dev:
+    name: Deploy DEV to S3
+    runs-on: self-hosted
+    needs: [gitleaks_scan, pylint_scan]
+    if: github.ref_name == 'dev'
+  
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+  
+      - name: Deploy DEV
+        shell: bash
+        run: |
+          set -euo pipefail
+  
+          MAPPING_FILE=".cicd/file-mapping.json"
+  
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+  
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            git ls-files > /tmp/changes.txt
+            sed -i 's/^/A\t/' /tmp/changes.txt
+          else
+            git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
           fi
-
-        done < /tmp/changes.txt
-
-
-# =========================
-# TEST DEPLOY
-# =========================
-deploy-test:
-  name: Deploy TEST to S3
-  runs-on: self-hosted
-  needs: [gitleaks_scan, pylint_scan]
-  if: github.ref_name == 'test'
-
-  steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Deploy TEST
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        MAPPING_FILE=".cicd/file-mapping.json"
-
-        BEFORE="${{ github.event.before }}"
-        AFTER="${{ github.sha }}"
-
-        if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-          git ls-files > /tmp/changes.txt
-          sed -i 's/^/A\t/' /tmp/changes.txt
-        else
-          git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
-        fi
-
-        while IFS=$'\t' read -r status p1 p2; do
-          case "$status" in
-            A|M) FILE="$p1" ;;
-            D) FILE="$p1" ;;
-            R*) FILE="$p2" ;;
-            *) continue ;;
-          esac
-
-          MATCH_FOUND=false
-
-          while read -r entry; do
-
-            SRC=$(echo "$entry" | jq -r 'keys[0]')
-            TARGET=$(echo "$entry" | jq -r '.[keys[0]]')
-
-            [[ -z "$SRC" || -z "$TARGET" ]] && continue
-
-            if [[ "$FILE" == $SRC/* ]]; then
-              MATCH_FOUND=true
-              REL="${FILE#$SRC/}"
-              DEST="$TARGET$REL"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
+  
+          while IFS=$'\t' read -r status p1 p2; do
+            case "$status" in
+              A|M) FILE="$p1" ;;
+              D) FILE="$p1" ;;
+              R*) FILE="$p2" ;;
+              *) continue ;;
+            esac
+  
+            MATCH_FOUND=false
+  
+            while read -r entry; do
+  
+              SRC=$(echo "$entry" | jq -r 'keys[0]')
+              TARGET=$(echo "$entry" | jq -r '.[keys[0]]')
+  
+              [[ -z "$SRC" || -z "$TARGET" ]] && continue
+  
+              if [[ "$FILE" == $SRC/* ]]; then
+                MATCH_FOUND=true
+                REL="${FILE#$SRC/}"
+                DEST="$TARGET$REL"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+                break
               fi
-              break
+  
+            done < <(jq -c 'to_entries[] | {(.key): .value}' "$MAPPING_FILE")
+  
+            if [ "$MATCH_FOUND" = false ]; then
+              echo "WARNING (DEV): No mapping for $FILE - using fallback"
+  
+              # ==========================================
+              # FALLBACK FOR src/*
+              # ==========================================
+              if [[ "$FILE" == src/* ]]; then
+  
+                REL_PATH="${FILE#src/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+  
+                echo "Fallback SRC Deploy => $DEST"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+  
+              # ==========================================
+              # FALLBACK FOR airflow/*
+              # ==========================================
+              elif [[ "$FILE" == airflow/* ]]; then
+  
+                REL_PATH="${FILE#airflow/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+  
+                echo "Fallback DAGS Deploy => $DEST"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+  
+              else
+                echo "SKIPPING unsupported file: $FILE"
+              fi
             fi
-
-          done < <(jq -c 'to_entries[] | {(.key): .value}' "$MAPPING_FILE")
-
-          if [ "$MATCH_FOUND" = false ]; then
-            echo "WARNING (TEST): No mapping for $FILE - using fallback"
-
-            # ==========================================
-            # FALLBACK FOR src/*
-            # ==========================================
-            if [[ "$FILE" == src/* ]]; then
-
-              REL_PATH="${FILE#src/}"
-              DEST="s3://test-bucket-chandan/${REL_PATH}"
-
-              echo "Fallback SRC Deploy => $DEST"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
-              fi
-
-            # ==========================================
-            # FALLBACK FOR airflow/*
-            # ==========================================
-            elif [[ "$FILE" == airflow/* ]]; then
-
-              REL_PATH="${FILE#airflow/}"
-              DEST="s3://test-bucket-chandan/${REL_PATH}"
-
-              echo "Fallback DAGS Deploy => $DEST"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
-              fi
-
-            else
-              echo "SKIPPING unsupported file: $FILE"
-            fi
+  
+          done < /tmp/changes.txt
+  
+  
+  # =========================
+  # TEST DEPLOY
+  # =========================
+  deploy-test:
+    name: Deploy TEST to S3
+    runs-on: self-hosted
+    needs: [gitleaks_scan, pylint_scan]
+    if: github.ref_name == 'test'
+  
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+  
+      - name: Deploy TEST
+        shell: bash
+        run: |
+          set -euo pipefail
+  
+          MAPPING_FILE=".cicd/file-mapping.json"
+  
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+  
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            git ls-files > /tmp/changes.txt
+            sed -i 's/^/A\t/' /tmp/changes.txt
+          else
+            git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
           fi
-
-        done < /tmp/changes.txt
-
-
-# =========================
-# PROD DEPLOY
-# =========================
-deploy-prod:
-  name: Deploy PROD to S3
-  runs-on: self-hosted
-  needs: [gitleaks_scan, pylint_scan]
-  if: github.ref_name == 'main'
-
-  steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Deploy PROD
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        MAPPING_FILE=".cicd/file-mapping.json"
-
-        BEFORE="${{ github.event.before }}"
-        AFTER="${{ github.sha }}"
-
-        if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-          git ls-files > /tmp/changes.txt
-          sed -i 's/^/A\t/' /tmp/changes.txt
-        else
-          git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
-        fi
-
-        while IFS=$'\t' read -r status p1 p2; do
-          case "$status" in
-            A|M) FILE="$p1" ;;
-            D) FILE="$p1" ;;
-            R*) FILE="$p2" ;;
-            *) continue ;;
-          esac
-
-          MATCH_FOUND=false
-
-          while read -r entry; do
-
-            SRC=$(echo "$entry" | jq -r 'keys[0]')
-            TARGET=$(echo "$entry" | jq -r '.[keys[0]]')
-
-            [[ -z "$SRC" || -z "$TARGET" ]] && continue
-
-            if [[ "$FILE" == $SRC/* ]]; then
-              MATCH_FOUND=true
-              REL="${FILE#$SRC/}"
-              DEST="$TARGET$REL"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
+  
+          while IFS=$'\t' read -r status p1 p2; do
+            case "$status" in
+              A|M) FILE="$p1" ;;
+              D) FILE="$p1" ;;
+              R*) FILE="$p2" ;;
+              *) continue ;;
+            esac
+  
+            MATCH_FOUND=false
+  
+            while read -r entry; do
+  
+              SRC=$(echo "$entry" | jq -r 'keys[0]')
+              TARGET=$(echo "$entry" | jq -r '.[keys[0]]')
+  
+              [[ -z "$SRC" || -z "$TARGET" ]] && continue
+  
+              if [[ "$FILE" == $SRC/* ]]; then
+                MATCH_FOUND=true
+                REL="${FILE#$SRC/}"
+                DEST="$TARGET$REL"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+                break
               fi
-              break
+  
+            done < <(jq -c 'to_entries[] | {(.key): .value}' "$MAPPING_FILE")
+  
+            if [ "$MATCH_FOUND" = false ]; then
+              echo "WARNING (TEST): No mapping for $FILE - using fallback"
+  
+              # ==========================================
+              # FALLBACK FOR src/*
+              # ==========================================
+              if [[ "$FILE" == src/* ]]; then
+  
+                REL_PATH="${FILE#src/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+  
+                echo "Fallback SRC Deploy => $DEST"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+  
+              # ==========================================
+              # FALLBACK FOR airflow/*
+              # ==========================================
+              elif [[ "$FILE" == airflow/* ]]; then
+  
+                REL_PATH="${FILE#airflow/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+  
+                echo "Fallback DAGS Deploy => $DEST"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+  
+              else
+                echo "SKIPPING unsupported file: $FILE"
+              fi
             fi
-
-          done < <(jq -c 'to_entries[] | {(.key): .value}' "$MAPPING_FILE")
-
-          if [ "$MATCH_FOUND" = false ]; then
-            echo "WARNING (PROD): No mapping for $FILE - using fallback"
-
-            # ==========================================
-            # FALLBACK FOR src/*
-            # ==========================================
-            if [[ "$FILE" == src/* ]]; then
-
-              REL_PATH="${FILE#src/}"
-              DEST="s3://test-bucket-chandan/${REL_PATH}"
-
-              echo "Fallback SRC Deploy => $DEST"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
-              fi
-
-            # ==========================================
-            # FALLBACK FOR airflow/*
-            # ==========================================
-            elif [[ "$FILE" == airflow/* ]]; then
-
-              REL_PATH="${FILE#airflow/}"
-              DEST="s3://test-bucket-chandan/${REL_PATH}"
-
-              echo "Fallback DAGS Deploy => $DEST"
-
-              if [[ "$status" == "D" ]]; then
-                aws s3 rm "$DEST" || true
-              else
-                aws s3 cp "$FILE" "$DEST"
-              fi
-
-            else
-              echo "SKIPPING unsupported file: $FILE"
-            fi
+  
+          done < /tmp/changes.txt
+  
+  
+  # =========================
+  # PROD DEPLOY
+  # =========================
+  deploy-prod:
+    name: Deploy PROD to S3
+    runs-on: self-hosted
+    needs: [gitleaks_scan, pylint_scan]
+    if: github.ref_name == 'main'
+  
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+  
+      - name: Deploy PROD
+        shell: bash
+        run: |
+          set -euo pipefail
+  
+          MAPPING_FILE=".cicd/file-mapping.json"
+  
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+  
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            git ls-files > /tmp/changes.txt
+            sed -i 's/^/A\t/' /tmp/changes.txt
+          else
+            git diff --name-status -M "$BEFORE" "$AFTER" > /tmp/changes.txt || true
           fi
-
-        done < /tmp/changes.txt
+  
+          while IFS=$'\t' read -r status p1 p2; do
+            case "$status" in
+              A|M) FILE="$p1" ;;
+              D) FILE="$p1" ;;
+              R*) FILE="$p2" ;;
+              *) continue ;;
+            esac
+  
+            MATCH_FOUND=false
+  
+            while read -r entry; do
+  
+              SRC=$(echo "$entry" | jq -r 'keys[0]')
+              TARGET=$(echo "$entry" | jq -r '.[keys[0]]')
+  
+              [[ -z "$SRC" || -z "$TARGET" ]] && continue
+  
+              if [[ "$FILE" == $SRC/* ]]; then
+                MATCH_FOUND=true
+                REL="${FILE#$SRC/}"
+                DEST="$TARGET$REL"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+                break
+              fi
+  
+            done < <(jq -c 'to_entries[] | {(.key): .value}' "$MAPPING_FILE")
+  
+            if [ "$MATCH_FOUND" = false ]; then
+              echo "WARNING (PROD): No mapping for $FILE - using fallback"
+  
+              # ==========================================
+              # FALLBACK FOR src/*
+              # ==========================================
+              if [[ "$FILE" == src/* ]]; then
+  
+                REL_PATH="${FILE#src/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+  
+                echo "Fallback SRC Deploy => $DEST"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+  
+              # ==========================================
+              # FALLBACK FOR airflow/*
+              # ==========================================
+              elif [[ "$FILE" == airflow/* ]]; then
+  
+                REL_PATH="${FILE#airflow/}"
+                DEST="s3://test-bucket-chandan/${REL_PATH}"
+  
+                echo "Fallback DAGS Deploy => $DEST"
+  
+                if [[ "$status" == "D" ]]; then
+                  aws s3 rm "$DEST" || true
+                else
+                  aws s3 cp "$FILE" "$DEST"
+                fi
+  
+              else
+                echo "SKIPPING unsupported file: $FILE"
+              fi
+            fi
+  
+          done < /tmp/changes.txt
