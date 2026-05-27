@@ -1,4 +1,4 @@
-name: Secure Deploy to S3
+name: Secure Deploy to S3 
 
 on:
   push:
